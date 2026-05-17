@@ -1,0 +1,17 @@
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: lagent-local
+  labels:
+    role: ai-agent
+spec:
+  deletionPolicy: orphan
+  reconciliation:
+    mode: manual
+    interval: 1m
+  labels:
+    stack: local
+    component: lagent
+    topology: docker-host
+    managedBy: external-compose
+    endpoint: http://host.docker.internal:3000

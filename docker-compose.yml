@@ -1,0 +1,100 @@
+x-otel-syslog-logging: &otel-syslog-logging
+  logging:
+    driver: syslog
+    options:
+      syslog-address: "tcp://127.0.0.1:1514"
+      syslog-format: rfc5424micro
+      tag: "{{.Name}}"
+
+services:
+  llm:
+    <<: *otel-syslog-logging
+    build:
+      context: ./llm
+    container_name: lagent-llm
+    ports:
+      - "18080:8080"
+    volumes:
+      - llm-models:/models
+    environment:
+      - MODEL_REPO=${MODEL_REPO:-unsloth/gemma-4-E4B-it-GGUF}
+      - MODEL_FILE=${MODEL_FILE:-gemma-4-E4B-it-Q4_K_M.gguf}
+      - MODEL_DIR=/models
+      - CTX_SIZE=${CTX_SIZE:-8192}
+      - N_GPU_LAYERS=${N_GPU_LAYERS:-99}
+      - THREADS=${THREADS:-4}
+      - PARALLEL=${PARALLEL:-1}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+    networks:
+      - lagent-net
+
+  backend:
+    <<: *otel-syslog-logging
+    build:
+      context: ./backend
+    container_name: lagent-backend
+    ports:
+      - "8090:8090"
+    volumes:
+      - lagent-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - LLM_BASE_URL=http://llm:8080
+      - AGENT_NAME=${AGENT_NAME:-Lagent}
+      - AGENT_SYSTEM_PROMPT=${AGENT_SYSTEM_PROMPT:-You are Lagent, a helpful personal AI assistant. Be concise, accurate, and friendly.}
+      - DATABASE_URL=sqlite+aiosqlite:////data/lagent.db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:14317}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-lagent-backend}
+      - OTEL_ENABLED=${OTEL_ENABLED:-true}
+      - OTEL_EXPORTER_OTLP_INSECURE=${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      - OTEL_METRIC_EXPORT_INTERVAL_MS=${OTEL_METRIC_EXPORT_INTERVAL_MS:-15000}
+    depends_on:
+      llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - lagent-net
+
+  frontend:
+    <<: *otel-syslog-logging
+    build:
+      context: ./frontend
+    container_name: lagent-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - lagent-net
+
+volumes:
+  llm-models:
+  lagent-data:
+
+networks:
+  lagent-net:
+    driver: bridge

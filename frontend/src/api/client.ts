@@ -1,0 +1,89 @@
+export interface AgentSettings {
+  system_prompt: string;
+  wan2gp_url: string;
+  image_generator: string;
+  image_width: number;
+  image_height: number;
+  image_seed: number;
+  image_loras: string;
+  video_generator: string;
+}
+
+const BASE = "";
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...init?.headers },
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export const api = {
+  health: () => request<{ status: string; llm: string; version: string }>("/api/health"),
+
+  agentInfo: () => request<{ name: string; system_prompt: string; model: string }>("/api/agent"),
+
+  listSessions: () => request<Array<{ id: string; title: string; created_at: string; updated_at: string }>>("/api/sessions"),
+
+  getSession: (id: string) =>
+    request<{
+      id: string;
+      title: string;
+      messages: Array<{ id: string; role: string; content: string; created_at: string }>;
+    }>(`/api/sessions/${id}`),
+
+  createSession: () => request<{ id: string; title: string }>("/api/sessions", { method: "POST" }),
+
+  deleteSession: (id: string) => request<{ ok: boolean }>(`/api/sessions/${id}`, { method: "DELETE" }),
+
+  updateSession: (id: string, title: string) =>
+    request<{ id: string; title: string }>(`/api/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+
+  getSettings: () => request<AgentSettings>("/api/settings"),
+
+  saveSettings: (payload: Partial<AgentSettings>) =>
+    request<AgentSettings>("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  // Guardian proxy
+  guardianOverview: () =>
+    request<{
+      generatedAt: string;
+      summary: {
+        partitions: number;
+        intents: number;
+        assets: number;
+        healthyAssets: number;
+        attentionAssets: number;
+        failingAssets: number;
+        healthyIntents: number;
+        driftedIntents: number;
+        failedIntents: number;
+        servicesHealthy: number;
+        servicesAttention: number;
+      };
+      partitions: Array<{
+        name: string;
+        status: string;
+        displayStatus: string;
+        health: string;
+        intentCount: number;
+        assetCount: number;
+        healthyAssets: number;
+        attentionAssets: number;
+        failingAssets: number;
+        healthyIntents: number;
+        driftedIntents: number;
+        failedIntents: number;
+        lastReconciledAt: string;
+      }>;
+    }>("/api/guardian/overview"),
+};
+

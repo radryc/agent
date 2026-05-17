@@ -1,0 +1,94 @@
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: lagent-stack
+spec:
+  intentType: standard
+  joins: []
+  targetPusher: docker-main
+  target:
+    cluster: docker-main
+  locked: false
+  assets:
+    # --- Volumes ---
+    - type: Volume
+      name: llm-models
+      properties:
+        size: 20Gi
+        accessMode: ReadWriteOnce
+
+    - type: Volume
+      name: lagent-data
+      properties:
+        size: 5Gi
+        accessMode: ReadWriteOnce
+
+    # --- LLM server (llama-cpp) ---
+    - type: Compute
+      name: lagent-llm
+      dependsOn:
+        - llm-models
+      properties:
+        image: lagent-llm:latest
+        ports:
+          - name: http
+            containerPort: 8080
+            protocol: TCP
+        env:
+          MODEL_REPO: unsloth/gemma-4-E4B-it-GGUF
+          MODEL_FILE: gemma-4-E4B-it-Q4_K_M.gguf
+          CTX_SIZE: "8192"
+          N_GPU_LAYERS: "99"
+        volumeMounts:
+          - volume: llm-models
+            path: /models
+
+    # --- Backend (FastAPI) ---
+    - type: Compute
+      name: lagent-backend
+      dependsOn:
+        - lagent-llm
+        - lagent-data
+      properties:
+        image: lagent-backend:latest
+        ports:
+          - name: http
+            containerPort: 8090
+            protocol: TCP
+        env:
+          LLM_BASE_URL: http://lagent-llm:8080
+          DATABASE_URL: sqlite+aiosqlite:////data/lagent.db
+          AGENT_NAME: Lagent
+          OTEL_ENABLED: "true"
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:14317
+          OTEL_EXPORTER_OTLP_INSECURE: "true"
+          OTEL_METRIC_EXPORT_INTERVAL_MS: "15000"
+          OTEL_SERVICE_NAME: lagent-backend
+        volumeMounts:
+          - volume: lagent-data
+            path: /data
+
+    # --- Frontend (React + nginx) ---
+    - type: Compute
+      name: lagent-frontend
+      dependsOn:
+        - lagent-backend
+      properties:
+        image: lagent-frontend:latest
+        ports:
+          - name: http
+            containerPort: 3000
+            protocol: TCP
+
+    # --- Edge load balancer ---
+    - type: LoadBalancer
+      name: lagent-edge
+      dependsOn:
+        - lagent-frontend
+      properties:
+        targets:
+          - lagent-frontend
+        listeners:
+          - name: http
+            port: 3000
+            protocol: TCP
