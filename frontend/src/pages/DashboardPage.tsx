@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { Link } from "react-router-dom";
 import {
   BarChart,
   Bar,
@@ -20,6 +21,11 @@ import {
   XCircle,
   RefreshCw,
   GitBranch,
+  Sparkles,
+  ShieldCheck,
+  Wrench,
+  BrainCircuit,
+  Image,
 } from "lucide-react";
 import { api } from "../api/client";
 
@@ -169,27 +175,39 @@ export default function DashboardPage() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-dark-900">
-      {/* Top bar */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-dark-600 shrink-0">
-        <div>
-          <h1 className="text-xl font-bold text-gray-100">Dashboard</h1>
-          {refreshedAt && !loading && (
-            <p className="text-xs text-gray-500 mt-0.5">
-              Updated {refreshedAt.toLocaleTimeString()}
+      <header className="shrink-0 border-b border-dark-600 bg-[radial-gradient(circle_at_15%_20%,rgba(6,182,212,0.12),transparent_40%),radial-gradient(circle_at_85%_15%,rgba(59,130,246,0.16),transparent_35%)]">
+        <div className="px-6 py-4 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.22em] text-accent-cyan/80 font-semibold">
+              AI Agent Dashboard
             </p>
-          )}
+            <h1 className="text-2xl font-bold text-gray-100 mt-1">Lagent Mission Control</h1>
+            <p className="text-xs text-gray-500 mt-1">
+              {refreshedAt && !loading
+                ? `Live telemetry synced at ${refreshedAt.toLocaleTimeString()}`
+                : "Synchronizing telemetry..."}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Link
+              to="/chat"
+              className="px-3 py-1.5 rounded-lg border border-dark-500 bg-dark-700 hover:bg-dark-600 text-sm text-gray-200 transition-colors"
+            >
+              Open Chat
+            </Link>
+            <button
+              onClick={load}
+              disabled={loading}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-blue/85 hover:bg-accent-blue border border-blue-300/20 text-sm text-white transition-colors disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              Refresh
+            </button>
+          </div>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 border border-dark-500 text-sm text-gray-300 transition-colors disabled:opacity-50"
-        >
-          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-          Refresh
-        </button>
       </header>
 
-      {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {error && (
           <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400">
@@ -197,53 +215,87 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Stat cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard
-            icon={Server}
-            label="Partitions"
-            value={s?.partitions ?? "—"}
-            color="text-accent-blue"
-          />
-          <StatCard
-            icon={Boxes}
-            label="Total Assets"
-            value={s?.assets ?? "—"}
-            sub={
-              healthPct !== null ? `${healthPct}% healthy` : undefined
-            }
-            color="text-accent-purple"
-          />
-          <StatCard
-            icon={GitBranch}
-            label="Intents"
-            value={s?.intents ?? "—"}
-            sub={
-              s
-                ? `${s.healthyIntents} ok · ${s.driftedIntents} drifted · ${s.failedIntents} failed`
-                : undefined
-            }
-            color="text-accent-cyan"
-          />
-          <StatCard
-            icon={Activity}
-            label="Services"
-            value={
-              s ? `${s.servicesHealthy + s.servicesAttention}` : "—"
-            }
-            sub={
-              s
-                ? `${s.servicesHealthy} healthy · ${s.servicesAttention} degraded`
-                : undefined
-            }
-            color="text-green-500"
-          />
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 glass rounded-xl p-5 border border-cyan-500/20">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                <BrainCircuit size={14} className="text-accent-cyan" />
+                Agent Runtime Snapshot
+              </h2>
+              <StatusBadge health={healthPct !== null && healthPct >= 80 ? "healthy" : "attention"} />
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <StatCard
+                icon={Server}
+                label="Partitions"
+                value={s?.partitions ?? "—"}
+                color="text-accent-blue"
+              />
+              <StatCard
+                icon={Boxes}
+                label="Total Assets"
+                value={s?.assets ?? "—"}
+                sub={healthPct !== null ? `${healthPct}% healthy` : undefined}
+                color="text-accent-purple"
+              />
+              <StatCard
+                icon={GitBranch}
+                label="Intents"
+                value={s?.intents ?? "—"}
+                sub={
+                  s
+                    ? `${s.healthyIntents} ok · ${s.driftedIntents} drifted · ${s.failedIntents} failed`
+                    : undefined
+                }
+                color="text-accent-cyan"
+              />
+              <StatCard
+                icon={Activity}
+                label="Services"
+                value={s ? `${s.servicesHealthy + s.servicesAttention}` : "—"}
+                sub={
+                  s
+                    ? `${s.servicesHealthy} healthy · ${s.servicesAttention} degraded`
+                    : undefined
+                }
+                color="text-green-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+              <div className="rounded-lg border border-dark-500 bg-dark-800/70 px-3 py-2 text-xs text-gray-300 flex items-center gap-2">
+                <ShieldCheck size={13} className="text-green-400" />
+                Guardrail status: Active
+              </div>
+              <div className="rounded-lg border border-dark-500 bg-dark-800/70 px-3 py-2 text-xs text-gray-300 flex items-center gap-2">
+                <Wrench size={13} className="text-accent-purple" />
+                Tool loop: up to 5 rounds
+              </div>
+              <div className="rounded-lg border border-dark-500 bg-dark-800/70 px-3 py-2 text-xs text-gray-300 flex items-center gap-2">
+                <Sparkles size={13} className="text-accent-cyan" />
+                Streaming mode: enabled
+              </div>
+            </div>
+          </div>
+
+          <section className="glass rounded-xl p-5 border border-blue-500/20 flex flex-col">
+            <h2 className="text-sm font-semibold text-gray-200 flex items-center gap-2 mb-3">
+              <Image size={14} className="text-accent-blue" />
+              Reference Image
+            </h2>
+            <p className="text-xs text-gray-500 mb-3">
+              Prompt text hidden. Waiting for your image.
+            </p>
+            <div className="w-full h-[230px] rounded-lg border border-dashed border-dark-500 bg-dark-800/70 flex flex-col items-center justify-center gap-2">
+              <Image size={20} className="text-gray-500" />
+              <p className="text-xs text-gray-500">Share an image and I will wire it in.</p>
+            </div>
+          </section>
         </div>
 
-        {/* Charts row */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Asset health donut */}
-          <div className="bg-dark-800 border border-dark-600 rounded-xl p-5">
+          <div className="glass rounded-xl p-5 border border-green-500/20">
             <h2 className="text-sm font-semibold text-gray-200 mb-4 flex items-center gap-2">
               <CheckCircle size={14} className="text-green-500" />
               Asset Health
@@ -288,8 +340,7 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Per-partition bar chart */}
-          <div className="lg:col-span-2 bg-dark-800 border border-dark-600 rounded-xl p-5">
+          <div className="lg:col-span-2 glass rounded-xl p-5 border border-cyan-500/20">
             <h2 className="text-sm font-semibold text-gray-200 mb-4 flex items-center gap-2">
               <Server size={14} className="text-accent-blue" />
               Assets per Partition
@@ -340,11 +391,10 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Partition table */}
-        <div className="bg-dark-800 border border-dark-600 rounded-xl overflow-hidden">
+        <div className="glass border border-dark-600 rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-dark-600 flex items-center gap-2">
             <Server size={14} className="text-accent-blue" />
-            <h2 className="text-sm font-semibold text-gray-200">Partitions</h2>
+            <h2 className="text-sm font-semibold text-gray-200">Infrastructure Feed</h2>
           </div>
           {loading && !overview ? (
             <div className="py-12 text-center text-gray-600 text-sm">
