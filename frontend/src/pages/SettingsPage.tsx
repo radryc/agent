@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, AgentSettings } from "../api/client";
 import AgentAvatar from "../components/chat/AgentAvatar";
-import { Activity, Cpu, Server, Save, Image, Bot } from "lucide-react";
-
-const IMAGE_GENERATORS = ["Z Image Turbo"];
-const VIDEO_GENERATORS = ["LTX-2 2.3 Distilled", "Enhanced Lightning v2"];
+import { Activity, Cpu, Server, Save, Bot, KeyRound } from "lucide-react";
 
 export default function SettingsPage() {
   const [health, setHealth] = useState<{ status: string; llm: string; version: string } | null>(null);
@@ -27,7 +24,11 @@ export default function SettingsPage() {
     if (!settings) return;
     setSaving(true);
     try {
-      const updated = await api.saveSettings(settings);
+      const payload: Partial<AgentSettings> = { ...settings };
+      if (!payload.gemini_api_key?.trim()) {
+        delete payload.gemini_api_key;
+      }
+      const updated = await api.saveSettings(payload);
       setSettings(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -84,98 +85,72 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        {/* Image Generation */}
+        {/* Gemini Image Generation */}
         <section className="glass rounded-xl p-6 space-y-5">
           <h2 className="text-base font-semibold flex items-center gap-2 text-gray-200">
-            <Image size={16} className="text-accent-purple" />
-            Image Generation (wan2gp)
+            <KeyRound size={16} className="text-accent-blue" />
+            Gemini Image Generation (Imagen)
           </h2>
 
           <div className="space-y-2">
-            <label className="block text-xs text-gray-500 uppercase tracking-wide">wan2gp URL</label>
+            <label className="block text-xs text-gray-500 uppercase tracking-wide">
+              Gemini API Key
+              <span className="ml-1 normal-case text-gray-600">(stored on backend, optional per-tool override)</span>
+            </label>
             <input
-              type="text"
-              value={settings?.wan2gp_url ?? ""}
-              onChange={(e) => update("wan2gp_url", e.target.value)}
+              type="password"
+              placeholder={
+                settings?.gemini_api_key_set
+                  ? `Configured: ${settings.gemini_api_key_masked ?? "(hidden)"}`
+                  : "Paste your Gemini API key"
+              }
+              value={settings?.gemini_api_key ?? ""}
+              onChange={(e) => update("gemini_api_key", e.target.value)}
               className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
             />
+            <p className="text-xs text-gray-600">
+              Leave empty to keep current key. Enter a new value and click Save to update.
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="block text-xs text-gray-500 uppercase tracking-wide">Image Generator</label>
-              <select
-                value={settings?.image_generator ?? ""}
-                onChange={(e) => update("image_generator", e.target.value)}
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Imagen Model</label>
+              <input
+                type="text"
+                value={settings?.gemini_image_model ?? "imagen-3.0-generate-002"}
+                onChange={(e) => update("gemini_image_model", e.target.value)}
                 className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
-              >
-                {IMAGE_GENERATORS.map((g) => (
-                  <option key={g} value={g}>{g}</option>
-                ))}
-              </select>
+              />
             </div>
-
             <div className="space-y-2">
-              <label className="block text-xs text-gray-500 uppercase tracking-wide">Video Generator</label>
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Aspect Ratio</label>
               <select
-                value={settings?.video_generator ?? ""}
-                onChange={(e) => update("video_generator", e.target.value)}
+                value={settings?.gemini_image_aspect_ratio ?? "16:9"}
+                onChange={(e) => update("gemini_image_aspect_ratio", e.target.value)}
                 className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
               >
-                {VIDEO_GENERATORS.map((g) => (
-                  <option key={g} value={g}>{g}</option>
+                {[
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9",
+                ].map((ratio) => (
+                  <option key={ratio} value={ratio}>{ratio}</option>
                 ))}
               </select>
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
-            <div className="space-y-2">
-              <label className="block text-xs text-gray-500 uppercase tracking-wide">Width</label>
-              <input
-                type="number"
-                step={8}
-                min={256}
-                max={2048}
-                value={settings?.image_width ?? 1280}
-                onChange={(e) => update("image_width", parseInt(e.target.value))}
-                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="block text-xs text-gray-500 uppercase tracking-wide">Height</label>
-              <input
-                type="number"
-                step={8}
-                min={256}
-                max={2048}
-                value={settings?.image_height ?? 720}
-                onChange={(e) => update("image_height", parseInt(e.target.value))}
-                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="block text-xs text-gray-500 uppercase tracking-wide">Seed (-1 random)</label>
-              <input
-                type="number"
-                min={-1}
-                value={settings?.image_seed ?? -1}
-                onChange={(e) => update("image_seed", parseInt(e.target.value))}
-                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-xs text-gray-500 uppercase tracking-wide">
-              Default LoRAs
-              <span className="ml-1 normal-case text-gray-600">(comma-separated names)</span>
-            </label>
+          <div className="space-y-2 max-w-xs">
+            <label className="block text-xs text-gray-500 uppercase tracking-wide">Default Image Count</label>
             <input
-              type="text"
-              placeholder="e.g. lego, watercolor"
-              value={settings?.image_loras ?? ""}
-              onChange={(e) => update("image_loras", e.target.value)}
+              type="number"
+              min={1}
+              max={4}
+              value={settings?.gemini_image_count ?? 1}
+              onChange={(e) => update("gemini_image_count", Math.max(1, Math.min(4, parseInt(e.target.value || "1"))))}
               className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
             />
           </div>
