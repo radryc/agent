@@ -19,9 +19,11 @@ export default function ChatInput() {
 
   const handleSend = () => {
     if (!text.trim() || isStreaming) return;
-    sendMessage(text);
-    setText("");
-    textareaRef.current?.focus();
+    const sent = sendMessage(text);
+    if (sent) {
+      setText("");
+      textareaRef.current?.focus();
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
