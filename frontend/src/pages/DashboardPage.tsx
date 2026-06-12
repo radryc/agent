@@ -181,7 +181,7 @@ export default function DashboardPage() {
             <p className="text-[11px] uppercase tracking-[0.22em] text-accent-cyan/80 font-semibold">
               AI Agent Dashboard
             </p>
-            <h1 className="text-2xl font-bold text-gray-100 mt-1">Strata Mission Control</h1>
+            <h1 className="text-2xl font-bold text-gray-100 mt-1">Lagent Mission Control</h1>
             <p className="text-xs text-gray-500 mt-1">
               {refreshedAt && !loading
                 ? `Live telemetry synced at ${refreshedAt.toLocaleTimeString()}`

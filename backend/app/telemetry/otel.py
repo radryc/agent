@@ -86,7 +86,7 @@ def instrument_app(app) -> None:
         logger.exception("Failed to instrument FastAPI")
 
 
-def get_tracer(name: str = "strata"):
+def get_tracer(name: str = "lagent"):
     from opentelemetry import trace
 
     return trace.get_tracer(name)
