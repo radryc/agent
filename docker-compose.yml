@@ -11,7 +11,7 @@ services:
     <<: *otel-syslog-logging
     build:
       context: ./llm
-    container_name: lagent-llm
+    container_name: strata-llm
     ports:
       - "18080:8080"
     volumes:
@@ -36,27 +36,27 @@ services:
         limits:
           memory: 12G
     networks:
-      - lagent-net
+      - strata-net
 
   backend:
     <<: *otel-syslog-logging
     build:
       context: ./backend
-    container_name: lagent-backend
+    container_name: strata-backend
     ports:
       - "8090:8090"
     volumes:
-      - lagent-data:/data
+      - strata-data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       - LLM_BASE_URL=http://llm:8080
-      - AGENT_NAME=${AGENT_NAME:-Lagent}
-      - AGENT_SYSTEM_PROMPT=${AGENT_SYSTEM_PROMPT:-You are Lagent, a helpful personal AI assistant. Be concise, accurate, and friendly.}
-      - DATABASE_URL=sqlite+aiosqlite:////data/lagent.db
+      - AGENT_NAME=${AGENT_NAME:-Strata}
+      - AGENT_SYSTEM_PROMPT=${AGENT_SYSTEM_PROMPT:-You are Strata agent, a helpful personal AI assistant. Be concise, accurate, and friendly.}
+      - DATABASE_URL=sqlite+aiosqlite:////data/strata.db
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:14317}
-      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-lagent-backend}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-strata-backend}
       - OTEL_ENABLED=${OTEL_ENABLED:-true}
       - OTEL_EXPORTER_OTLP_INSECURE=${OTEL_EXPORTER_OTLP_INSECURE:-true}
       - OTEL_METRIC_EXPORT_INTERVAL_MS=${OTEL_METRIC_EXPORT_INTERVAL_MS:-15000}
@@ -71,13 +71,13 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks:
-      - lagent-net
+      - strata-net
 
   frontend:
     <<: *otel-syslog-logging
     build:
       context: ./frontend
-    container_name: lagent-frontend
+    container_name: strata-frontend
     ports:
       - "3000:3000"
     depends_on:
@@ -90,12 +90,12 @@ services:
       retries: 3
     restart: unless-stopped
     networks:
-      - lagent-net
+      - strata-net
 
 volumes:
   llm-models:
-  lagent-data:
+  strata-data:
 
 networks:
-  lagent-net:
+  strata-net:
     driver: bridge

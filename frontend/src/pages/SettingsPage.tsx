@@ -63,7 +63,7 @@ export default function SettingsPage() {
           <div className="flex items-center gap-4">
             <AgentAvatar size="lg" />
             <div>
-              <p className="font-semibold">Lagent</p>
+              <p className="font-semibold">Strata</p>
               <div className="flex items-center gap-2 mt-0.5">
                 <Cpu size={12} className="text-accent-purple" />
                 <span className="text-xs text-gray-500">{agentModel}</span>

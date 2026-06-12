@@ -309,7 +309,7 @@ async def execute_tool(name: str, args: dict | None = None) -> str:
                 resp = await client.get(
                     url,
                     headers={
-                        "User-Agent": "Lagent/0.1 (+local web_fetch tool)",
+                        "User-Agent": "Strata/0.1 (+local web_fetch tool)",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     },
                 )
