@@ -64,7 +64,7 @@ export default function ChatInput() {
       </div>
 
       <p className="text-center text-[10px] text-gray-600 mt-2">
-        Lagent runs locally via llama.cpp — your data never leaves your machine
+        Strata runs locally via llama.cpp — your data never leaves your machine
       </p>
     </div>
   );
