@@ -1,7 +1,7 @@
 apiVersion: guardian/v1alpha1
 kind: Intent
 metadata:
-  name: strata-stack
+  name: lagent-stack
 spec:
   intentType: standard
   joins: []
@@ -18,18 +18,18 @@ spec:
         accessMode: ReadWriteOnce
 
     - type: Volume
-      name: strata-data
+      name: lagent-data
       properties:
         size: 5Gi
         accessMode: ReadWriteOnce
 
     # --- LLM server (llama-cpp) ---
     - type: Compute
-      name: strata-llm
+      name: lagent-llm
       dependsOn:
         - llm-models
       properties:
-        image: strata-llm:latest
+        image: lagent-llm:latest
         ports:
           - name: http
             containerPort: 8080
@@ -45,36 +45,36 @@ spec:
 
     # --- Backend (FastAPI) ---
     - type: Compute
-      name: strata-backend
+      name: lagent-backend
       dependsOn:
-        - strata-llm
-        - strata-data
+        - lagent-llm
+        - lagent-data
       properties:
-        image: strata-backend:latest
+        image: lagent-backend:latest
         ports:
           - name: http
             containerPort: 8090
             protocol: TCP
         env:
-          LLM_BASE_URL: http://strata-llm:8080
-          DATABASE_URL: sqlite+aiosqlite:////data/strata.db
-          AGENT_NAME: Strata
+          LLM_BASE_URL: http://lagent-llm:8080
+          DATABASE_URL: sqlite+aiosqlite:////data/lagent.db
+          AGENT_NAME: Lagent
           OTEL_ENABLED: "true"
           OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:14317
           OTEL_EXPORTER_OTLP_INSECURE: "true"
           OTEL_METRIC_EXPORT_INTERVAL_MS: "15000"
-          OTEL_SERVICE_NAME: strata-backend
+          OTEL_SERVICE_NAME: lagent-backend
         volumeMounts:
-          - volume: strata-data
+          - volume: lagent-data
             path: /data
 
     # --- Frontend (React + nginx) ---
     - type: Compute
-      name: strata-frontend
+      name: lagent-frontend
       dependsOn:
-        - strata-backend
+        - lagent-backend
       properties:
-        image: strata-frontend:latest
+        image: lagent-frontend:latest
         ports:
           - name: http
             containerPort: 3000
@@ -82,12 +82,12 @@ spec:
 
     # --- Edge load balancer ---
     - type: LoadBalancer
-      name: strata-edge
+      name: lagent-edge
       dependsOn:
-        - strata-frontend
+        - lagent-frontend
       properties:
         targets:
-          - strata-frontend
+          - lagent-frontend
         listeners:
           - name: http
             port: 3000

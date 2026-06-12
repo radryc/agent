@@ -53,7 +53,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
       <div className="flex items-center gap-3 p-4 border-b border-dark-600">
         <AgentAvatar size="sm" />
         <div className="flex-1 min-w-0">
-          <h1 className="text-sm font-semibold text-gray-100 truncate">Strata</h1>
+          <h1 className="text-sm font-semibold text-gray-100 truncate">Lagent</h1>
           <p className="text-xs text-gray-500">Local AI Assistant</p>
         </div>
         <button

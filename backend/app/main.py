@@ -26,19 +26,19 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting strata agent backend...")
+    logger.info("Starting lagent backend...")
     init_telemetry()
     instrument_app(app)
     load_runtime_settings()
     await init_db()
-    logger.info("strata agent backend ready")
+    logger.info("lagent backend ready")
     yield
-    logger.info("Shutting down strata agent backend...")
+    logger.info("Shutting down lagent backend...")
     await close_client()
     await close_db()
 
 
-app = FastAPI(title="strata agent", version="0.1.1", lifespan=lifespan)
+app = FastAPI(title="lagent", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
