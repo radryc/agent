@@ -3,6 +3,16 @@ import type { Message, Session, WSIncoming } from "../types";
 import { ChatWebSocket } from "../api/websocket";
 import { api } from "../api/client";
 
+function generateUUID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 15) >> (c === "x" ? 0 : 3);
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 interface ChatState {
   sessions: Session[];
   activeSessionId: string | null;
@@ -49,7 +59,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const content = get().streamContent;
         if (content) {
           const assistantMsg: Message = {
-            id: crypto.randomUUID(),
+            id: generateUUID(),
             session_id: msg.session_id || state.activeSessionId || "",
             role: "assistant",
             content,
@@ -147,7 +157,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     const userMsg: Message = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       session_id: state.activeSessionId || "",
       role: "user",
       content: payloadText,
