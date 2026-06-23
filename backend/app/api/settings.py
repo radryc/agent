@@ -3,29 +3,39 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.config import get_all_runtime_settings, save_runtime_settings
+from app.config import get_all_runtime_settings, get_runtime, save_runtime_settings
 
 router = APIRouter(tags=["settings"])
 
 
 class SettingsPayload(BaseModel):
     system_prompt: str | None = None
-    wan2gp_url: str | None = None
-    image_generator: str | None = None
-    image_width: int | None = None
-    image_height: int | None = None
-    image_seed: int | None = None
-    image_loras: str | None = None
-    video_generator: str | None = None
+    gemini_api_key: str | None = None
+    gemini_image_model: str | None = None
+    gemini_image_aspect_ratio: str | None = None
+    gemini_image_count: int | None = None
+
+
+def _mask_secret(secret: str) -> str:
+    if not secret:
+        return ""
+    if len(secret) <= 8:
+        return "*" * len(secret)
+    return f"{secret[:4]}{'*' * (len(secret) - 8)}{secret[-4:]}"
 
 
 @router.get("/api/settings")
 async def get_settings():
-    return get_all_runtime_settings()
+    data = get_all_runtime_settings()
+    gemini_key = (get_runtime("gemini_api_key") or "").strip()
+    data["gemini_api_key"] = ""
+    data["gemini_api_key_set"] = bool(gemini_key)
+    data["gemini_api_key_masked"] = _mask_secret(gemini_key)
+    return data
 
 
 @router.put("/api/settings")
 async def put_settings(payload: SettingsPayload):
     overrides = {k: v for k, v in payload.model_dump().items() if v is not None}
     save_runtime_settings(overrides)
-    return get_all_runtime_settings()
+    return await get_settings()

@@ -18,7 +18,7 @@ interface ChatState {
   createSession: () => Promise<string>;
   switchSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
-  sendMessage: (text: string) => void;
+  sendMessage: (text: string) => boolean;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -70,7 +70,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     };
 
-    const ws = new ChatWebSocket(handler);
+    const ws = new ChatWebSocket(handler, {
+      onClose: () => {
+        set({ isStreaming: false, streamContent: "" });
+      },
+      onError: () => {
+        set({ isStreaming: false, streamContent: "" });
+      },
+    });
     ws.connect();
     set({ ws });
 
@@ -125,13 +132,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: (text: string) => {
     const state = get();
-    if (state.isStreaming || !text.trim()) return;
+    if (state.isStreaming || !text.trim()) return false;
+
+    const payloadText = text.trim();
+    const sent =
+      state.ws?.send({
+        type: "message",
+        data: payloadText,
+        session_id: state.activeSessionId || undefined,
+      }) ?? false;
+
+    if (!sent) {
+      return false;
+    }
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
       session_id: state.activeSessionId || "",
       role: "user",
-      content: text.trim(),
+      content: payloadText,
       created_at: new Date().toISOString(),
     };
 
@@ -141,10 +160,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamContent: "",
     }));
 
-    state.ws?.send({
-      type: "message",
-      data: text.trim(),
-      session_id: state.activeSessionId || undefined,
-    });
+    return true;
   },
 }));

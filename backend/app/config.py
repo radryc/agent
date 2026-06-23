@@ -22,14 +22,11 @@ class Settings(BaseSettings):
     )
     database_url: str = "sqlite+aiosqlite:////data/lagent.db"
 
-    # Image generation via wan2gp
-    wan2gp_url: str = "http://host.docker.internal:7860"
-    image_generator: str = "Z Image Turbo"
-    image_width: int = 1280
-    image_height: int = 720
-    image_seed: int = -1
-    image_loras: str = ""
-    video_generator: str = "LTX-2 2.3 Distilled"
+    # Gemini image generation
+    gemini_api_key: str = ""
+    gemini_image_model: str = "imagen-3.0-generate-002"
+    gemini_image_aspect_ratio: str = "16:9"
+    gemini_image_count: int = 1
 
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "lagent-backend"
@@ -53,15 +50,16 @@ def get_runtime(key: str):
 def get_all_runtime_settings() -> dict:
     defaults = {
         "system_prompt": settings.agent_system_prompt,
-        "wan2gp_url": settings.wan2gp_url,
-        "image_generator": settings.image_generator,
-        "image_width": settings.image_width,
-        "image_height": settings.image_height,
-        "image_seed": settings.image_seed,
-        "image_loras": settings.image_loras,
-        "video_generator": settings.video_generator,
+        "gemini_image_model": settings.gemini_image_model,
+        "gemini_image_aspect_ratio": settings.gemini_image_aspect_ratio,
+        "gemini_image_count": settings.gemini_image_count,
     }
     return {**defaults, **_runtime_overrides}
+
+
+def is_runtime_configured(key: str) -> bool:
+    value = get_runtime(key)
+    return bool(value and str(value).strip())
 
 
 def load_runtime_settings() -> None:

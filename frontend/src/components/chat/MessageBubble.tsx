@@ -10,7 +10,11 @@ interface MessageBubbleProps {
 }
 
 // Regex to match markdown image syntax: ![alt](url)
-const IMG_RE = /!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g;
+const IMG_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
+const LINK_RE = /(?<!!)\[([^\]]+)\]\(([^)]+)\)/g;
+
+const VIDEO_RE = /\.(mp4|webm|mov|mkv|avi|m4v)(\?|$)/i;
+const AUDIO_RE = /\.(mp3|wav|flac|ogg|m4a|aac)(\?|$)/i;
 
 function renderContent(text: string, isStreaming: boolean) {
   const parts: React.ReactNode[] = [];
@@ -39,9 +43,70 @@ function renderContent(text: string, isStreaming: boolean) {
   }
 
   if (last < text.length) {
+    const remainder = text.slice(last);
+    let linkLast = 0;
+    LINK_RE.lastIndex = 0;
+
+    while ((match = LINK_RE.exec(remainder)) !== null) {
+      if (match.index > linkLast) {
+        parts.push(
+          <span key={`t-${last + linkLast}`} className="whitespace-pre-wrap break-words">
+            {remainder.slice(linkLast, match.index)}
+          </span>
+        );
+      }
+
+      const label = match[1] || "generated media";
+      const url = match[2];
+
+      if (VIDEO_RE.test(url)) {
+        parts.push(
+          <video
+            key={`v-${last + match.index}`}
+            src={url}
+            controls
+            className="mt-2 mb-1 max-w-full rounded-lg border border-dark-600"
+          />
+        );
+      } else if (AUDIO_RE.test(url)) {
+        parts.push(
+          <audio
+            key={`a-${last + match.index}`}
+            src={url}
+            controls
+            className="mt-2 mb-1 w-full"
+          />
+        );
+      } else {
+        parts.push(
+          <a
+            key={`l-${last + match.index}`}
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-accent-blue underline break-all"
+          >
+            {label}
+          </a>
+        );
+      }
+
+      linkLast = match.index + match[0].length;
+    }
+
+    if (linkLast < remainder.length) {
+      parts.push(
+        <span key={`t-end-${last + linkLast}`} className="whitespace-pre-wrap break-words">
+          {remainder.slice(linkLast)}
+        </span>
+      );
+    }
+  }
+
+  if (parts.length === 0 && text.length > 0) {
     parts.push(
       <span key={last} className="whitespace-pre-wrap break-words">
-        {text.slice(last)}
+        {text}
       </span>
     );
   }
