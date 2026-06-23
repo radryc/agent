@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment
+.env
+*.env.local
+*.local.env
+
+# Secrets/tokens
+*.swp
+*.swo
+keys.txt
+mytoken.txt
+
+# OS
+.DS_Store
+Thumbs.db

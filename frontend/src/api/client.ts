@@ -1,12 +1,11 @@
 export interface AgentSettings {
   system_prompt: string;
-  wan2gp_url: string;
-  image_generator: string;
-  image_width: number;
-  image_height: number;
-  image_seed: number;
-  image_loras: string;
-  video_generator: string;
+  gemini_api_key: string;
+  gemini_api_key_set?: boolean;
+  gemini_api_key_masked?: string;
+  gemini_image_model: string;
+  gemini_image_aspect_ratio: string;
+  gemini_image_count: number;
 }
 
 const BASE = "";

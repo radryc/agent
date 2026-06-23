@@ -54,6 +54,7 @@ services:
       - AGENT_NAME=${AGENT_NAME:-Lagent}
       - AGENT_SYSTEM_PROMPT=${AGENT_SYSTEM_PROMPT:-You are Lagent, a helpful personal AI assistant. Be concise, accurate, and friendly.}
       - DATABASE_URL=sqlite+aiosqlite:////data/lagent.db
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:14317}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-lagent-backend}
       - OTEL_ENABLED=${OTEL_ENABLED:-true}

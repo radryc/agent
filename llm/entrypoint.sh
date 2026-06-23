@@ -19,6 +19,9 @@ fi
 
 echo "==> Starting llama-cpp server with ${MODEL_FILE} ..."
 
+# Ensure runtime can locate llama shared libraries regardless of loader defaults.
+export LD_LIBRARY_PATH="/app:/usr/local/lib:${LD_LIBRARY_PATH:-}"
+
 exec /app/llama-server \
     --model "$MODEL_PATH" \
     --host 0.0.0.0 \

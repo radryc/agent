@@ -11,3 +11,4 @@ opentelemetry-sdk==1.33.0
 opentelemetry-exporter-otlp-proto-grpc==1.33.0
 opentelemetry-instrumentation-fastapi==0.54b0
 duckduckgo-search==8.0.1
+google-genai==1.16.1
