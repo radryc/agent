@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, AgentSettings } from "../api/client";
 import AgentAvatar from "../components/chat/AgentAvatar";
-import { Activity, Cpu, Server, Save, Bot, KeyRound } from "lucide-react";
+import { Activity, Cpu, Server, Save, Bot, KeyRound, Terminal } from "lucide-react";
 
 export default function SettingsPage() {
   const [health, setHealth] = useState<{ status: string; llm: string; version: string } | null>(null);
@@ -153,6 +153,35 @@ export default function SettingsPage() {
               onChange={(e) => update("gemini_image_count", Math.max(1, Math.min(4, parseInt(e.target.value || "1"))))}
               className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
             />
+          </div>
+        </section>
+
+        {/* OpenCode Agent */}
+        <section className="glass rounded-xl p-6 space-y-4">
+          <h2 className="text-base font-semibold flex items-center gap-2 text-gray-200">
+            <Terminal size={16} className="text-accent-purple" />
+            OpenCode Agent
+          </h2>
+
+          <div className="space-y-2">
+            <label className="block text-xs text-gray-500 uppercase tracking-wide">
+              API Key
+              <span className="ml-1 normal-case text-gray-600">(set as OPENAI_API_KEY when launching opencode)</span>
+            </label>
+            <input
+              type="password"
+              placeholder={
+                settings?.opencode_api_key_set
+                  ? `Configured: ${settings.opencode_api_key_masked ?? "(hidden)"}`
+                  : "Paste your OpenAI API key for opencode"
+              }
+              value={settings?.opencode_api_key ?? ""}
+              onChange={(e) => update("opencode_api_key", e.target.value)}
+              className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+            />
+            <p className="text-xs text-gray-600">
+              OpenCode uses this key to access LLM providers. Leave empty if opencode is configured separately via environment variables or if using local models.
+            </p>
           </div>
         </section>
 

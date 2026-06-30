@@ -32,8 +32,11 @@ export interface WSIncoming {
   session_id?: string;
 }
 
+export type AgentType = "local" | "opencode";
+
 export interface WSOutgoing {
   type: "message" | "ping";
   data?: string;
   session_id?: string;
+  agent?: AgentType;
 }

@@ -86,3 +86,31 @@ body {
   backdrop-filter: blur(16px);
   border: 1px solid rgba(50, 50, 74, 0.4);
 }
+
+/* === xterm.js overrides === */
+.xterm {
+  padding: 8px;
+  height: 100%;
+}
+
+.xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-dark-500) transparent;
+}
+
+.xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--color-dark-500);
+  border-radius: 3px;
+}
+
+.xterm .xterm-cursor-layer {
+  /* cursor color handled by theme */;
+}

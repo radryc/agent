@@ -6,6 +6,9 @@ export interface AgentSettings {
   gemini_image_model: string;
   gemini_image_aspect_ratio: string;
   gemini_image_count: number;
+  opencode_api_key: string;
+  opencode_api_key_set?: boolean;
+  opencode_api_key_masked?: string;
 }
 
 const BASE = "";
@@ -84,5 +87,18 @@ export const api = {
         lastReconciledAt: string;
       }>;
     }>("/api/guardian/overview"),
+
+  // Agent management
+  agentStatus: () =>
+    request<{
+      agents: Array<{
+        id: string;
+        name: string;
+        description: string;
+        available: boolean;
+        default: boolean;
+      }>;
+      active: string;
+    }>("/api/agent/status"),
 };
 
