@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Message, Session, WSIncoming } from "../types";
+import type { Message, Session, WSIncoming, AgentType } from "../types";
 import { ChatWebSocket } from "../api/websocket";
 import { api } from "../api/client";
 
@@ -10,6 +10,7 @@ interface ChatState {
   isStreaming: boolean;
   streamContent: string;
   ws: ChatWebSocket | null;
+  activeAgent: AgentType;
 
   // Actions
   init: () => void;
@@ -19,6 +20,7 @@ interface ChatState {
   switchSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   sendMessage: (text: string) => boolean;
+  setActiveAgent: (agent: AgentType) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -28,6 +30,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   streamContent: "",
   ws: null,
+  activeAgent: "local",
 
   init: () => {
     const handler = (msg: WSIncoming) => {
@@ -37,7 +40,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (!state.activeSessionId) {
           set({ activeSessionId: msg.session_id });
         }
-        // Reload sessions to pick up the new one
         get().loadSessions();
       }
 
@@ -140,6 +142,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         type: "message",
         data: payloadText,
         session_id: state.activeSessionId || undefined,
+        agent: state.activeAgent,
       }) ?? false;
 
     if (!sent) {
@@ -161,5 +164,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     return true;
+  },
+
+  setActiveAgent: (agent: AgentType) => {
+    set({ activeAgent: agent });
   },
 }));

@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.agent.loop import run_agent_turn, ensure_session
+from app.agent.opencode import run_opencode, is_opencode_available
 from app.models.schemas import ChatRequest
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ async def ws_chat(websocket: WebSocket):
 
             user_message = data.get("data", "")
             session_id = data.get("session_id")
+            agent = data.get("agent", "local")
 
             if not user_message:
                 await websocket.send_json(
@@ -61,21 +63,10 @@ async def ws_chat(websocket: WebSocket):
             )
 
             try:
-                token_stream = await run_agent_turn(
-                    user_message, session_id, stream=True
-                )
-                async for token in token_stream:
-                    await websocket.send_json(
-                        {
-                            "type": "token",
-                            "data": token,
-                            "session_id": session_id,
-                        }
-                    )
-
-                await websocket.send_json(
-                    {"type": "done", "session_id": session_id}
-                )
+                if agent == "opencode":
+                    await _stream_opencode(websocket, user_message, session_id)
+                else:
+                    await _stream_local(websocket, user_message, session_id)
             except Exception as e:
                 logger.exception("Error during agent turn")
                 await websocket.send_json(
@@ -84,3 +75,28 @@ async def ws_chat(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
+
+
+async def _stream_local(websocket: WebSocket, user_message: str, session_id: str):
+    token_stream = await run_agent_turn(user_message, session_id, stream=True)
+    async for token in token_stream:
+        await websocket.send_json(
+            {"type": "token", "data": token, "session_id": session_id}
+        )
+    await websocket.send_json({"type": "done", "session_id": session_id})
+
+
+async def _stream_opencode(websocket: WebSocket, user_message: str, session_id: str):
+    if not await is_opencode_available():
+        async for token in run_opencode(user_message, session_id):
+            await websocket.send_json(
+                {"type": "token", "data": token, "session_id": session_id}
+            )
+        await websocket.send_json({"type": "done", "session_id": session_id})
+        return
+
+    async for chunk in run_opencode(user_message, session_id):
+        await websocket.send_json(
+            {"type": "token", "data": chunk, "session_id": session_id}
+        )
+    await websocket.send_json({"type": "done", "session_id": session_id})

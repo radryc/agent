@@ -14,6 +14,7 @@ class SettingsPayload(BaseModel):
     gemini_image_model: str | None = None
     gemini_image_aspect_ratio: str | None = None
     gemini_image_count: int | None = None
+    opencode_api_key: str | None = None
 
 
 def _mask_secret(secret: str) -> str:
@@ -31,6 +32,12 @@ async def get_settings():
     data["gemini_api_key"] = ""
     data["gemini_api_key_set"] = bool(gemini_key)
     data["gemini_api_key_masked"] = _mask_secret(gemini_key)
+
+    opencode_key = (get_runtime("opencode_api_key") or "").strip()
+    data["opencode_api_key"] = ""
+    data["opencode_api_key_set"] = bool(opencode_key)
+    data["opencode_api_key_masked"] = _mask_secret(opencode_key)
+
     return data
 
 

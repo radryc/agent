@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     gemini_image_aspect_ratio: str = "16:9"
     gemini_image_count: int = 1
 
+    # OpenCode agent
+    opencode_api_key: str = ""
+
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "lagent-backend"
     otel_enabled: bool = False
@@ -53,6 +56,7 @@ def get_all_runtime_settings() -> dict:
         "gemini_image_model": settings.gemini_image_model,
         "gemini_image_aspect_ratio": settings.gemini_image_aspect_ratio,
         "gemini_image_count": settings.gemini_image_count,
+        "opencode_api_key": settings.opencode_api_key,
     }
     return {**defaults, **_runtime_overrides}
 

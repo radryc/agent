@@ -16,6 +16,7 @@ from app.api.health import router as health_router
 from app.api.settings import router as settings_router
 from app.api.guardian import router as guardian_router
 from app.api.media import router as media_router
+from app.api.agent import router as agent_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,3 +55,4 @@ app.include_router(health_router)
 app.include_router(settings_router)
 app.include_router(guardian_router)
 app.include_router(media_router)
+app.include_router(agent_router)
