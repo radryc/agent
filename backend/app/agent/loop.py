@@ -20,6 +20,8 @@ MAX_TOOL_ROUNDS = 5
 _HELP_TEXT = (
     "Available commands and tools:\n\n"
     "- /help: Show this help message.\n"
+    "- /mode [agent|terminal]: Switch between agent and terminal mode.\n"
+    "  Hotkey: Ctrl+E toggles between modes.\n"
     "- web_search(query, max_results=5): Search the web for current information.\n"
     "- web_fetch(url, max_chars=6000): Fetch and extract readable text from a URL.\n"
     "- datetime_now(): Get the current date/time in UTC.\n"

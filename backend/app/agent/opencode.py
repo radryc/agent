@@ -1,38 +1,132 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import shutil
 from typing import AsyncIterator
+
+import httpx
 
 from app.config import get_runtime
 
 logger = logging.getLogger(__name__)
 
-OPENCODE_BIN = "opencode"
+def _server_url() -> str:
+    return str(get_runtime("opencode_server_url") or "").strip()
 
 
-def _find_opencode() -> str | None:
-    """Locate the opencode binary on PATH."""
-    path = shutil.which(OPENCODE_BIN)
-    if path:
-        return path
+def _sdk_import_ok() -> bool:
+    try:
+        import opencode_agent_sdk  # noqa: F401
+    except Exception:
+        return False
+    return True
 
-    # Check common install locations
-    candidates = [
-        os.path.expanduser("~/.local/bin/opencode"),
-        os.path.expanduser("~/.cargo/bin/opencode"),
-        "/usr/local/bin/opencode",
-    ]
-    for c in candidates:
-        if os.path.isfile(c) and os.access(c, os.X_OK):
-            return c
-    return None
+
+class OpenCodeAgentService:
+    def __init__(self) -> None:
+        self._resume_by_session: dict[str, str] = {}
+
+    async def is_available(self) -> bool:
+        server_url = _server_url()
+        if not server_url or not _sdk_import_ok():
+            return False
+
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                for path in ("/health", "/api/health", "/"):
+                    resp = await client.get(f"{server_url.rstrip('/')}{path}")
+                    if resp.status_code < 500:
+                        return True
+                return False
+        except Exception:
+            logger.exception("OpenCode SDK availability probe failed")
+            return False
+
+    async def stream(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        cwd: str | None = None,
+    ) -> AsyncIterator[str]:
+        server_url = _server_url()
+        if not server_url:
+            yield "\x1b[31mOpenCode server is not configured.\x1b[0m\r\n"
+            yield "Set OpenCode Server URL in Settings to enable OpenCode agent.\r\n"
+            return
+
+        if not _sdk_import_ok():
+            yield "\x1b[31mOpenCode SDK is not installed on backend.\x1b[0m\r\n"
+            yield "Install dependency: \x1b[33mpip install opencode-agent-sdk\x1b[0m\r\n"
+            return
+
+        from opencode_agent_sdk import (
+            AgentOptions,
+            AssistantMessage,
+            ResultMessage,
+            SDKClient,
+            TextBlock,
+        )
+        from opencode_agent_sdk._errors import ProcessError
+
+        model = str(get_runtime("opencode_model") or "").strip()
+        provider_id = str(get_runtime("opencode_provider_id") or "anthropic").strip()
+        system_prompt = str(get_runtime("opencode_system_prompt") or "").strip()
+        working_dir = cwd or os.getcwd()
+        resume_id = self._resume_by_session.get(session_id or "")
+
+        logger.info(
+            "Running OpenCode via SDK: session=%s server_url=%s cwd=%s model=%s provider=%s resume=%s",
+            session_id or "none",
+            server_url,
+            working_dir,
+            model or "(default)",
+            provider_id,
+            resume_id or "none",
+        )
+
+        client = SDKClient(
+            options=AgentOptions(
+                cwd=working_dir,
+                server_url=server_url,
+                model=model,
+                provider_id=provider_id,
+                system_prompt=system_prompt,
+                resume=resume_id,
+            )
+        )
+
+        try:
+            await client.connect()
+            await client.query(prompt)
+
+            async for message in client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock) and block.text:
+                            yield block.text
+                elif isinstance(message, ResultMessage):
+                    if session_id and message.session_id:
+                        self._resume_by_session[session_id] = message.session_id
+                    if message.is_error:
+                        yield "\r\n\x1b[33mOpenCode returned an error result.\x1b[0m\r\n"
+        except ProcessError as exc:
+            logger.exception("OpenCode SDK process error")
+            yield f"\x1b[31mOpenCode request failed: {exc}\x1b[0m\r\n"
+        except Exception as exc:
+            logger.exception("OpenCode SDK unexpected error")
+            yield f"\x1b[31mOpenCode request failed: {exc}\x1b[0m\r\n"
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.debug("Ignoring OpenCode SDK disconnect error", exc_info=True)
+
+
+_opencode_service = OpenCodeAgentService()
 
 
 async def is_opencode_available() -> bool:
-    return _find_opencode() is not None
+    return await _opencode_service.is_available()
 
 
 async def run_opencode(
@@ -40,98 +134,5 @@ async def run_opencode(
     session_id: str | None = None,
     cwd: str | None = None,
 ) -> AsyncIterator[str]:
-    """
-    Run opencode with the given prompt and stream the output.
-
-    Uses the opencode CLI in pipe mode: writes the prompt to stdin,
-    then yields stdout lines as they arrive.
-
-    If opencode is not available, yields a helpful error message.
-    """
-    bin_path = _find_opencode()
-
-    if not bin_path:
-        yield "\x1b[31mOpenCode is not installed.\x1b[0m\r\n"
-        yield "\r\nRun: \x1b[33mcurl -fsSL https://opencode.ai/install | bash\x1b[0m\r\n"
-        return
-
-    working_dir = cwd or os.getcwd()
-
-    logger.info(
-        "Running opencode: bin=%s prompt_len=%d session=%s cwd=%s",
-        bin_path,
-        len(prompt),
-        session_id or "none",
-        working_dir,
-    )
-
-    # Use 'opencode' in non-interactive mode.
-    # The CLI accepts piped input: echo "prompt" | opencode
-    #
-    # Strategy: pass -p flag for prompt, or write to stdin.
-    # We'll try both approaches.
-
-    # Build environment with API key if configured
-    env = os.environ.copy()
-    opencode_key = get_runtime("opencode_api_key")
-    if opencode_key and opencode_key.strip():
-        env["OPENAI_API_KEY"] = opencode_key.strip()
-        logger.info("OpenCode API key configured (len=%d)", len(opencode_key.strip()))
-
-    try:
-        # Approach: use opencode with -p flag (non-interactive prompt mode)
-        # Note: opencode may or may not support -p; fallback to stdin pipe
-        proc = await asyncio.create_subprocess_exec(
-            bin_path,
-            "-p",
-            prompt,
-            "--print",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=working_dir,
-            env=env,
-        )
-    except Exception:
-        # Fallback: try without --print flag
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                bin_path,
-                "-p",
-                prompt,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-                env=env,
-            )
-        except Exception as exc:
-            logger.exception("Failed to spawn opencode")
-            yield f"\x1b[31mFailed to start opencode: {exc}\x1b[0m\r\n"
-            return
-
-    async def read_stderr():
-        if proc.stderr:
-            async for line in proc.stderr:
-                decoded = line.decode(errors="replace")
-                logger.debug("opencode stderr: %s", decoded.strip())
-
-    stderr_task = asyncio.ensure_future(read_stderr())
-
-    try:
-        if proc.stdout:
-            async for line in proc.stdout:
-                decoded = line.decode(errors="replace")
-                yield decoded
-    except Exception as exc:
-        logger.exception("Error reading opencode stdout")
-        yield f"\r\n\x1b[31mError: {exc}\x1b[0m\r\n"
-    finally:
-        await proc.wait()
-        if not stderr_task.done():
-            stderr_task.cancel()
-            try:
-                await stderr_task
-            except asyncio.CancelledError:
-                pass
-
-    if proc.returncode != 0:
-        yield f"\r\n\x1b[33mOpenCode exited with code {proc.returncode}\x1b[0m\r\n"
+    async for chunk in _opencode_service.stream(prompt, session_id=session_id, cwd=cwd):
+        yield chunk

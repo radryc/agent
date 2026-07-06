@@ -37,6 +37,25 @@ class MessageRow(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class TerminalStateRow(Base):
+    __tablename__ = "terminal_states"
+
+    session_id = Column(String, primary_key=True)
+    shell = Column(String, nullable=False, default="/bin/bash")
+    cwd = Column(String, nullable=False, default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TerminalHistoryRow(Base):
+    __tablename__ = "terminal_history"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, index=True, nullable=False)
+    command = Column(Text, nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 _engine = None
 _session_factory = None
 
@@ -123,6 +142,12 @@ async def delete_session(session_id: str) -> bool:
         await db.execute(
             delete(MessageRow).where(MessageRow.session_id == session_id)
         )
+        await db.execute(
+            delete(TerminalHistoryRow).where(TerminalHistoryRow.session_id == session_id)
+        )
+        await db.execute(
+            delete(TerminalStateRow).where(TerminalStateRow.session_id == session_id)
+        )
         await db.delete(row)
         await db.commit()
         return True
@@ -186,3 +211,95 @@ async def get_messages(session_id: str) -> list[dict]:
             {"role": m.role, "content": m.content}
             for m in result.scalars().all()
         ]
+
+
+async def get_terminal_state(session_id: str) -> dict | None:
+    async with _get_session() as db:
+        row = await db.get(TerminalStateRow, session_id)
+        if not row:
+            return None
+        return {
+            "session_id": row.session_id,
+            "shell": row.shell,
+            "cwd": row.cwd,
+            "updated_at": row.updated_at,
+        }
+
+
+async def upsert_terminal_state(session_id: str, cwd: str, shell: str = "/bin/bash") -> dict:
+    now = datetime.utcnow()
+    async with _get_session() as db:
+        row = await db.get(TerminalStateRow, session_id)
+        if not row:
+            row = TerminalStateRow(
+                session_id=session_id,
+                shell=shell,
+                cwd=cwd,
+                updated_at=now,
+            )
+            db.add(row)
+        else:
+            row.shell = shell
+            row.cwd = cwd
+            row.updated_at = now
+        await db.commit()
+    return {
+        "session_id": session_id,
+        "shell": shell,
+        "cwd": cwd,
+        "updated_at": now,
+    }
+
+
+async def add_terminal_history(session_id: str, command: str) -> dict | None:
+    cleaned = command.strip()
+    if not cleaned:
+        return None
+
+    history_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    async with _get_session() as db:
+        count_result = await db.execute(
+            select(TerminalHistoryRow).where(TerminalHistoryRow.session_id == session_id)
+        )
+        position = len(count_result.scalars().all())
+        row = TerminalHistoryRow(
+            id=history_id,
+            session_id=session_id,
+            command=cleaned,
+            position=position,
+            created_at=now,
+        )
+        db.add(row)
+        await db.commit()
+
+    return {
+        "id": history_id,
+        "session_id": session_id,
+        "command": cleaned,
+        "position": position,
+        "created_at": now,
+    }
+
+
+async def list_terminal_history(session_id: str, limit: int = 200) -> list[dict]:
+    safe_limit = max(1, min(limit, 1000))
+    async with _get_session() as db:
+        result = await db.execute(
+            select(TerminalHistoryRow)
+            .where(TerminalHistoryRow.session_id == session_id)
+            .order_by(TerminalHistoryRow.position.desc())
+        )
+        rows = result.scalars().all()[:safe_limit]
+
+    ordered = list(reversed(rows))
+    return [
+        {
+            "id": r.id,
+            "session_id": r.session_id,
+            "command": r.command,
+            "position": r.position,
+            "created_at": r.created_at,
+        }
+        for r in ordered
+    ]

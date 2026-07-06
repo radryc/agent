@@ -1,18 +1,68 @@
+ARG MONOFS_CLIENT_IMAGE=monofs-client:latest
+FROM ${MONOFS_CLIENT_IMAGE} AS monofs-client-stage
+
 FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    bash-completion \
+    build-essential \
+    ca-certificates \
+    curl \
+    fd-find \
+    fuse3 \
+    git \
+    golang-go \
+    iproute2 \
+    jq \
+    less \
+    nano \
+    procps \
+    ripgrep \
+    sudo \
+    unzip \
+    vim \
+    zip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+        arch="$(dpkg --print-architecture)"; \
+        case "$arch" in \
+            amd64) bazelisk_arch="amd64" ;; \
+            arm64) bazelisk_arch="arm64" ;; \
+            *) echo "Unsupported architecture for Bazelisk: $arch"; exit 1 ;; \
+        esac; \
+        curl -fsSL "https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${bazelisk_arch}" -o /usr/local/bin/bazelisk; \
+        chmod +x /usr/local/bin/bazelisk; \
+        ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && ln -s /root/.local/bin/uv /usr/local/bin/uv
 
 COPY requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 
+COPY --from=monofs-client-stage /usr/local/bin/monofs-client /usr/local/bin/monofs-client
+COPY --from=monofs-client-stage /usr/local/bin/monofs-session /usr/local/bin/monofs-session
+COPY guardianctl /usr/local/bin/guardianctl
+
 COPY app/ ./app/
 
 RUN mkdir -p /data
+
+RUN mkdir -p /etc && \
+    touch /etc/fuse.conf && \
+    grep -qxF 'user_allow_other' /etc/fuse.conf || echo 'user_allow_other' >> /etc/fuse.conf && \
+    ln -sf /proc/self/mounts /etc/mtab
+
+RUN useradd -m -s /bin/bash developer && \
+    usermod -aG sudo developer && \
+    echo "developer ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/developer && \
+    chmod 0440 /etc/sudoers.d/developer && \
+    chown -R developer:developer /app /data
+
+USER developer
 
 EXPOSE 8090
 

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Message, Session, WSIncoming, AgentType } from "../types";
+import type { Message, Session, WSIncoming, AgentType, Mode } from "../types";
 import { ChatWebSocket } from "../api/websocket";
 import { api } from "../api/client";
 
@@ -11,6 +11,11 @@ interface ChatState {
   streamContent: string;
   ws: ChatWebSocket | null;
   activeAgent: AgentType;
+  mode: Mode;
+  cwd: string;
+  execOutput: string;
+  terminalConnected: boolean;
+  terminalHistory: string[];
 
   // Actions
   init: () => void;
@@ -19,8 +24,15 @@ interface ChatState {
   createSession: () => Promise<string>;
   switchSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
+  renameSession: (id: string, title: string) => Promise<void>;
   sendMessage: (text: string) => boolean;
+  startTerminal: () => boolean;
+  sendTerminalInput: (data: string) => boolean;
+  sendTerminalResize: (cols: number, rows: number) => void;
+  sendTerminalSignal: (signal?: string) => void;
+  addTerminalHistory: (command: string) => void;
   setActiveAgent: (agent: AgentType) => void;
+  setMode: (mode: Mode) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -31,6 +43,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamContent: "",
   ws: null,
   activeAgent: "local",
+  mode: "agent",
+  cwd: "~",
+  execOutput: "",
+  terminalConnected: false,
+  terminalHistory: [],
 
   init: () => {
     const handler = (msg: WSIncoming) => {
@@ -68,16 +85,61 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       if (msg.type === "error") {
-        set({ isStreaming: false, streamContent: "" });
+        set({ isStreaming: false, streamContent: "", execOutput: "" });
+      }
+
+      if (msg.type === "exec_output" && msg.data) {
+        set((s) => ({ execOutput: s.execOutput + msg.data }));
+      }
+
+      if (msg.type === "exec_done") {
+        set({ isStreaming: false, execOutput: "" });
+      }
+
+      if (msg.type === "exec_cwd" && msg.cwd) {
+        set({ cwd: msg.cwd });
+      }
+
+      if (msg.type === "terminal_ready") {
+        set({ terminalConnected: true });
+      }
+
+      if (msg.type === "terminal_output" && msg.data) {
+        set((s) => ({ execOutput: s.execOutput + msg.data }));
+      }
+
+      if (msg.type === "terminal_exit") {
+        set({ terminalConnected: false, isStreaming: false });
+      }
+
+      if (msg.type === "terminal_cwd" && msg.cwd) {
+        set({ cwd: msg.cwd });
+      }
+
+      if (msg.type === "terminal_sync") {
+        set({
+          terminalHistory: msg.history || [],
+          cwd: msg.cwd || get().cwd,
+          terminalConnected: true,
+        });
+      }
+
+      if (msg.type === "terminal_error") {
+        set({ terminalConnected: false, isStreaming: false });
       }
     };
 
     const ws = new ChatWebSocket(handler, {
       onClose: () => {
-        set({ isStreaming: false, streamContent: "" });
+        set({ isStreaming: false, streamContent: "", terminalConnected: false });
       },
       onError: () => {
-        set({ isStreaming: false, streamContent: "" });
+        set({ isStreaming: false, streamContent: "", terminalConnected: false });
+      },
+      onOpen: () => {
+        if (get().mode === "terminal") {
+          get().startTerminal();
+        }
       },
     });
     ws.connect();
@@ -118,6 +180,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         created_at: m.created_at,
       }));
       set({ activeSessionId: id, messages, isStreaming: false, streamContent: "" });
+      if (get().mode === "terminal") {
+        get().startTerminal();
+      }
     } catch {
       // ignore
     }
@@ -132,11 +197,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await get().loadSessions();
   },
 
+  renameSession: async (id: string, title: string) => {
+    await api.updateSession(id, title.trim() || "New Chat");
+    await get().loadSessions();
+  },
+
   sendMessage: (text: string) => {
     const state = get();
     if (state.isStreaming || !text.trim()) return false;
 
     const payloadText = text.trim();
+
+    if (state.mode === "terminal") {
+      const sent =
+        state.ws?.send({
+          type: "exec",
+          data: payloadText,
+          session_id: state.activeSessionId || undefined,
+        }) ?? false;
+
+      if (!sent) return false;
+
+      set({ isStreaming: true, execOutput: "" });
+      return true;
+    }
+
     const sent =
       state.ws?.send({
         type: "message",
@@ -166,7 +251,68 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return true;
   },
 
+  startTerminal: () => {
+    const state = get();
+    const sent =
+      state.ws?.send({
+        type: "terminal_start",
+        session_id: state.activeSessionId || undefined,
+      }) ?? false;
+    if (sent) {
+      set({ terminalConnected: true, execOutput: "" });
+    }
+    return sent;
+  },
+
+  sendTerminalInput: (data: string) => {
+    const state = get();
+    if (!state.terminalConnected) {
+      const started = get().startTerminal();
+      if (!started) return false;
+    }
+
+    return (
+      state.ws?.send({
+        type: "terminal_input",
+        data,
+      }) ?? false
+    );
+  },
+
+  sendTerminalResize: (cols: number, rows: number) => {
+    get().ws?.send({
+      type: "terminal_resize",
+      cols,
+      rows,
+    });
+  },
+
+  sendTerminalSignal: (signal = "SIGINT") => {
+    get().ws?.send({
+      type: "terminal_signal",
+      signal,
+    });
+  },
+
+  addTerminalHistory: (command: string) => {
+    const trimmed = command.trim();
+    if (!trimmed) return;
+
+    set((s) => ({ terminalHistory: [...s.terminalHistory, trimmed] }));
+    get().ws?.send({
+      type: "terminal_history",
+      command: trimmed,
+    });
+  },
+
   setActiveAgent: (agent: AgentType) => {
     set({ activeAgent: agent });
+  },
+
+  setMode: (mode: Mode) => {
+    set({ mode });
+    if (mode === "terminal") {
+      get().startTerminal();
+    }
   },
 }));

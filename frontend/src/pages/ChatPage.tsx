@@ -1,6 +1,7 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useChatStore } from "../stores/chatStore";
+import type { Mode } from "../types";
 import Terminal, { type TerminalHandle } from "../components/terminal/Terminal";
 
 const AGENT_PROMPTS: Record<string, string> = {
@@ -14,12 +15,28 @@ export default function ChatPage() {
   const {
     activeSessionId,
     activeAgent,
+    sessions,
     switchSession,
     sendMessage,
+    renameSession,
     isStreaming,
     streamContent,
     messages,
+    mode,
+    cwd,
+    execOutput,
+    setMode,
+    startTerminal,
+    sendTerminalInput,
+    sendTerminalResize,
+    sendTerminalSignal,
+    addTerminalHistory,
+    terminalConnected,
   } = useChatStore();
+
+  const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
 
   const prompt = AGENT_PROMPTS[activeAgent] || "$ ";
 
@@ -32,6 +49,7 @@ export default function ChatPage() {
 
   // Replay history into terminal when switching sessions
   useEffect(() => {
+    if (mode === "terminal") return;
     const term = terminalRef.current;
     if (!term) return;
     term.clear();
@@ -46,29 +64,36 @@ export default function ChatPage() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId]);
+  }, [activeSessionId, mode]);
 
   // Write streaming tokens to terminal
   const prevLenRef = useRef(0);
   useEffect(() => {
     const term = terminalRef.current;
-    if (!term || !isStreaming) {
+    if (!term) {
       prevLenRef.current = 0;
       return;
     }
-    const delta = streamContent.slice(prevLenRef.current);
+
+    if (mode !== "terminal" && !isStreaming) {
+      prevLenRef.current = 0;
+      return;
+    }
+
+    const src = mode === "terminal" ? execOutput : streamContent;
+    const delta = src.slice(prevLenRef.current);
     if (delta) {
       term.write(delta);
-      prevLenRef.current = streamContent.length;
+      prevLenRef.current = src.length;
     }
-  }, [streamContent, isStreaming]);
+  }, [streamContent, execOutput, isStreaming, mode]);
 
-  // When streaming starts, add spacing
+  // When streaming starts in agent mode, add spacing
   useEffect(() => {
-    if (isStreaming) {
+    if (isStreaming && mode !== "terminal") {
       terminalRef.current?.writeln("");
     }
-  }, [isStreaming]);
+  }, [isStreaming, mode]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -78,23 +103,114 @@ export default function ChatPage() {
   );
 
   const handleCancel = useCallback(() => {
-    // Cancel functionality can be added later
-  }, []);
+    sendTerminalSignal("SIGINT");
+  }, [sendTerminalSignal]);
+
+  const handleSetMode = useCallback(
+    (newMode: Mode) => {
+      setMode(newMode);
+    },
+    [setMode]
+  );
+
+  const handleTerminalStart = useCallback(() => {
+    startTerminal();
+  }, [startTerminal]);
+
+  const handleTerminalInput = useCallback(
+    (data: string) => {
+      sendTerminalInput(data);
+    },
+    [sendTerminalInput]
+  );
+
+  const handleTerminalResize = useCallback(
+    (cols: number, rows: number) => {
+      sendTerminalResize(cols, rows);
+    },
+    [sendTerminalResize]
+  );
+
+  const handleTerminalSignal = useCallback(
+    (name?: string) => {
+      sendTerminalSignal(name || "SIGINT");
+    },
+    [sendTerminalSignal]
+  );
+
+  const handleTerminalHistory = useCallback(
+    (command: string) => {
+      addTerminalHistory(command);
+    },
+    [addTerminalHistory]
+  );
 
   return (
     <div className="flex flex-col h-full bg-dark-900">
       {/* Status bar */}
       <div className="shrink-0 flex items-center gap-3 px-4 py-2 border-b border-dark-600 bg-dark-800/80 text-xs">
         <span className="text-gray-500">Session</span>
-        <span className="text-gray-300 font-mono text-[11px]">
-          {activeSessionId?.slice(0, 8) ?? "..."}
-        </span>
+        {editingTitle && activeSessionId ? (
+          <input
+            className="bg-dark-700 border border-accent-blue rounded px-1.5 py-0.5 text-xs text-gray-100 outline-none font-mono w-40"
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                renameSession(activeSessionId, titleDraft);
+                setEditingTitle(false);
+              } else if (e.key === "Escape") {
+                setEditingTitle(false);
+              }
+            }}
+            onBlur={() => {
+              if (titleDraft.trim()) {
+                renameSession(activeSessionId, titleDraft);
+              }
+              setEditingTitle(false);
+            }}
+            autoFocus
+          />
+        ) : (
+          <span
+            className="text-gray-300 font-mono text-[11px] cursor-pointer hover:text-accent-blue transition-colors"
+            title="Double-click to rename"
+            onDoubleClick={() => {
+              if (activeSessionId) {
+                setEditingTitle(true);
+                setTitleDraft(activeSession?.title || "New Chat");
+              }
+            }}
+          >
+            {activeSession?.title || activeSessionId?.slice(0, 8) || "..."}
+          </span>
+        )}
         <span className="text-gray-700">|</span>
         <span className="text-gray-500">Agent</span>
         <span className="text-accent-blue font-medium">
           {useChatStore.getState().activeAgent === "local" ? "Local" : "OpenCode"}
         </span>
-        {isStreaming && (
+        <span className="text-gray-700">|</span>
+        <span className="text-gray-500">Mode</span>
+        <span
+          className={`font-medium cursor-pointer ${mode === "terminal" ? "text-accent-green" : "text-accent-purple"}`}
+          onClick={() => setMode(mode === "terminal" ? "agent" : "terminal")}
+          title="Ctrl+E to toggle"
+        >
+          {mode === "terminal" ? "Terminal" : "Agent"}
+        </span>
+        <span className="text-gray-600 text-[10px]">Ctrl+E</span>
+        {mode === "terminal" && (
+          <>
+            <span className="text-gray-700">|</span>
+            <span
+              className={`font-medium ${terminalConnected ? "text-accent-green" : "text-amber-400"}`}
+            >
+              {terminalConnected ? "Shell Connected" : "Shell Connecting"}
+            </span>
+          </>
+        )}
+        {isStreaming && mode !== "terminal" && (
           <>
             <span className="text-gray-700">|</span>
             <span className="flex items-center gap-1.5 text-accent-cyan">
@@ -110,9 +226,17 @@ export default function ChatPage() {
         <Terminal
           ref={terminalRef}
           onSend={handleSend}
+          onTerminalStart={handleTerminalStart}
+          onTerminalInput={handleTerminalInput}
+          onTerminalResize={handleTerminalResize}
+          onTerminalSignal={handleTerminalSignal}
+          onTerminalHistory={handleTerminalHistory}
           onCancel={handleCancel}
           streaming={isStreaming}
           prompt={prompt}
+          mode={mode}
+          cwd={cwd}
+          onSetMode={handleSetMode}
         />
       </div>
     </div>

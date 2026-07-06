@@ -63,7 +63,7 @@ export default function SettingsPage() {
           <div className="flex items-center gap-4">
             <AgentAvatar size="lg" />
             <div>
-              <p className="font-semibold">Lagent</p>
+              <p className="font-semibold">OutageOtto</p>
               <div className="flex items-center gap-2 mt-0.5">
                 <Cpu size={12} className="text-accent-purple" />
                 <span className="text-xs text-gray-500">{agentModel}</span>
@@ -165,23 +165,58 @@ export default function SettingsPage() {
 
           <div className="space-y-2">
             <label className="block text-xs text-gray-500 uppercase tracking-wide">
-              API Key
-              <span className="ml-1 normal-case text-gray-600">(set as OPENAI_API_KEY when launching opencode)</span>
+              OpenCode Server URL
             </label>
             <input
-              type="password"
-              placeholder={
-                settings?.opencode_api_key_set
-                  ? `Configured: ${settings.opencode_api_key_masked ?? "(hidden)"}`
-                  : "Paste your OpenAI API key for opencode"
-              }
-              value={settings?.opencode_api_key ?? ""}
-              onChange={(e) => update("opencode_api_key", e.target.value)}
+              type="text"
+              placeholder="http://opencode:54321"
+              value={settings?.opencode_server_url ?? ""}
+              onChange={(e) => update("opencode_server_url", e.target.value)}
               className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
             />
             <p className="text-xs text-gray-600">
-              OpenCode uses this key to access LLM providers. Leave empty if opencode is configured separately via environment variables or if using local models.
+              The backend connects to OpenCode through its server API using opencode-agent-sdk. This no longer requires the OpenCode CLI to be installed in the backend container.
             </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">
+                Model ID
+              </label>
+              <input
+                type="text"
+                placeholder="claude-haiku-4-5"
+                value={settings?.opencode_model ?? ""}
+                onChange={(e) => update("opencode_model", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">
+                Provider ID
+              </label>
+              <input
+                type="text"
+                placeholder="anthropic"
+                value={settings?.opencode_provider_id ?? "anthropic"}
+                onChange={(e) => update("opencode_provider_id", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-xs text-gray-500 uppercase tracking-wide">
+              OpenCode System Prompt (optional override)
+            </label>
+            <textarea
+              rows={4}
+              value={settings?.opencode_system_prompt ?? ""}
+              onChange={(e) => update("opencode_system_prompt", e.target.value)}
+              className="w-full rounded-lg bg-dark-700 border border-dark-600 p-3 text-sm text-gray-200 focus:outline-none focus:border-accent-blue resize-y font-mono leading-relaxed"
+              placeholder="Optional OpenCode-specific system prompt"
+            />
           </div>
         </section>
 
@@ -213,4 +248,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-

@@ -19,7 +19,7 @@ export default function ChatMessages() {
         <AgentAvatar size="lg" />
         <div className="text-center">
           <h2 className="text-xl font-semibold text-gray-200 mb-2">
-            Welcome to Lagent
+            Welcome to OutageOtto
           </h2>
           <p className="text-sm text-gray-500 max-w-md">
             Your local AI assistant powered by Gemma 4. Everything runs on your

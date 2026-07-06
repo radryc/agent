@@ -9,6 +9,10 @@ export interface AgentSettings {
   opencode_api_key: string;
   opencode_api_key_set?: boolean;
   opencode_api_key_masked?: string;
+  opencode_server_url: string;
+  opencode_model: string;
+  opencode_provider_id: string;
+  opencode_system_prompt: string;
 }
 
 const BASE = "";
@@ -101,4 +105,3 @@ export const api = {
       active: string;
     }>("/api/agent/status"),
 };
-
