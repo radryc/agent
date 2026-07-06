@@ -17,6 +17,7 @@ from app.api.settings import router as settings_router
 from app.api.guardian import router as guardian_router
 from app.api.media import router as media_router
 from app.api.agent import router as agent_router
+from app.terminal.exec import get_terminal_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,9 +33,11 @@ async def lifespan(app: FastAPI):
     instrument_app(app)
     load_runtime_settings()
     await init_db()
+    await get_terminal_manager().start()
     logger.info("lagent backend ready")
     yield
     logger.info("Shutting down lagent backend...")
+    await get_terminal_manager().stop()
     await close_client()
     await close_db()
 

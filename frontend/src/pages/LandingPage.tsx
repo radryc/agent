@@ -41,11 +41,10 @@ export default function LandingPage() {
 
         {/* Title */}
         <h1 className="text-4xl font-bold text-gray-100 mb-3 tracking-tight">
-          AI Coding Agent
+          OutageOtto
         </h1>
         <p className="text-lg text-gray-500 max-w-md mx-auto mb-10">
-          Your local AI programming assistant. Chat with AI in a fully-featured
-          terminal emulator. Private, fast, and always available.
+          SRE supervision. Not customer support.
         </p>
 
         {/* Agent Selection */}
@@ -81,7 +80,7 @@ export default function LandingPage() {
                       {agent.name}
                       {!agent.available && (
                         <span className="text-[9px] bg-dark-600 px-1.5 py-0.5 rounded">
-                          not installed
+                          unavailable
                         </span>
                       )}
                     </div>

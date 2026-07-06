@@ -1,8 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useChatStore } from "../../stores/chatStore";
 import AgentSwitch from "./AgentSwitch";
-import { Plus, Trash2, Settings, MessageSquare, X, Terminal } from "lucide-react";
+import { Plus, Trash2, Settings, MessageSquare, X, Terminal, Pencil } from "lucide-react";
 import type { AgentType } from "../../types";
 
 interface SidebarProps {
@@ -19,10 +19,14 @@ export default function Sidebar({ onClose }: SidebarProps) {
     createSession,
     switchSession,
     deleteSession,
+    renameSession,
     setActiveAgent,
   } = useChatStore();
   const navigate = useNavigate();
   const location = useLocation();
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
 
   useEffect(() => {
     init();
@@ -99,24 +103,70 @@ export default function Sidebar({ onClose }: SidebarProps) {
           </p>
         )}
         {sessions.map((s) => (
-          <button
+          <div
             key={s.id}
             onClick={() => handleSwitch(s.id)}
-            className={`group flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-left transition-colors ${
+            className={`group flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-left transition-colors cursor-pointer ${
               activeSessionId === s.id
                 ? "bg-dark-600 text-gray-100"
                 : "text-gray-400 hover:bg-dark-700 hover:text-gray-200"
             }`}
           >
             <MessageSquare size={14} className="shrink-0" />
-            <span className="flex-1 truncate">{s.title}</span>
+            {editingId === s.id ? (
+              <input
+                className="flex-1 bg-dark-800 border border-accent-blue rounded px-1 py-0.5 text-xs text-gray-100 outline-none"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.stopPropagation();
+                    renameSession(s.id, editTitle);
+                    setEditingId(null);
+                  } else if (e.key === "Escape") {
+                    e.stopPropagation();
+                    setEditingId(null);
+                  }
+                }}
+                onBlur={() => {
+                  if (editTitle.trim() && editTitle !== s.title) {
+                    renameSession(s.id, editTitle);
+                  }
+                  setEditingId(null);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                autoFocus
+              />
+            ) : (
+              <span
+                className="flex-1 truncate"
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditingId(s.id);
+                  setEditTitle(s.title);
+                }}
+              >
+                {s.title}
+              </span>
+            )}
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditingId(s.id);
+                setEditTitle(s.title);
+              }}
+              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-dark-500 transition-opacity"
+              title="Rename"
+            >
+              <Pencil size={12} />
+            </span>
             <span
               onClick={(e) => handleDelete(e, s.id)}
               className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-dark-500 transition-opacity"
             >
               <Trash2 size={12} />
             </span>
-          </button>
+          </div>
         ))}
       </div>
 

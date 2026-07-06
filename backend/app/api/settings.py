@@ -15,6 +15,10 @@ class SettingsPayload(BaseModel):
     gemini_image_aspect_ratio: str | None = None
     gemini_image_count: int | None = None
     opencode_api_key: str | None = None
+    opencode_server_url: str | None = None
+    opencode_model: str | None = None
+    opencode_provider_id: str | None = None
+    opencode_system_prompt: str | None = None
 
 
 def _mask_secret(secret: str) -> str:

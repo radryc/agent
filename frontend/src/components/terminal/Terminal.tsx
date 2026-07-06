@@ -11,6 +11,8 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
+import type { Mode } from "../../types";
+
 export interface TerminalHandle {
   write: (text: string) => void;
   writeln: (text: string) => void;
@@ -22,13 +24,37 @@ export interface TerminalHandle {
 
 interface TerminalProps {
   onSend: (text: string) => void;
+  onTerminalStart: () => void;
+  onTerminalInput: (data: string) => void;
+  onTerminalResize: (cols: number, rows: number) => void;
+  onTerminalSignal: (signal?: string) => void;
+  onTerminalHistory: (command: string) => void;
   onCancel?: () => void;
   streaming: boolean;
   prompt?: string;
+  mode: Mode;
+  cwd: string;
+  onSetMode: (mode: Mode) => void;
 }
 
 const Terminal = forwardRef<TerminalHandle, TerminalProps>(
-  ({ onSend, onCancel, streaming, prompt = "$ " }, ref) => {
+  (
+    {
+      onSend,
+      onTerminalStart,
+      onTerminalInput,
+      onTerminalResize,
+      onTerminalSignal,
+      onTerminalHistory,
+      onCancel,
+      streaming,
+      prompt = "$ ",
+      mode,
+      cwd,
+      onSetMode,
+    },
+    ref
+  ) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const xtermRef = useRef<XTerm | null>(null);
     const fitAddonRef = useRef<FitAddon>(new FitAddon());
@@ -37,31 +63,60 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const historyIdxRef = useRef(-1);
     const savedLineRef = useRef("");
     const promptRef = useRef(prompt);
+    const terminalLineRef = useRef("");
     const streamingLock = useRef(false);
+    const modeRef = useRef(mode);
 
-    promptRef.current = prompt;
+    promptRef.current = mode === "terminal" ? `${cwd}$ ` : prompt;
+    modeRef.current = mode;
 
-    const writePrompt = useCallback(() => {
+    const writePrompt = useCallback((leadingNewline = true) => {
       const t = xtermRef.current;
       if (!t) return;
-      t.write("\r\n");
+      if (modeRef.current === "terminal") return;
+      t.write(leadingNewline ? "\r\n" : "\r");
       t.write(promptRef.current);
     }, []);
 
-    const cancelLine = useCallback(() => {
+    const cancelLine = useCallback((showPrompt = true) => {
       const t = xtermRef.current;
       if (!t) return;
       if (bufferRef.current) {
         t.write("^C");
       }
       bufferRef.current = "";
-      writePrompt();
+      if (showPrompt) {
+        writePrompt();
+      }
     }, [writePrompt]);
 
     const handleEnter = useCallback(() => {
       const line = bufferRef.current.trim();
       bufferRef.current = "";
       xtermRef.current?.write("\r\n");
+
+      if (line.startsWith("/mode")) {
+        const parts = line.split(/\s+/);
+        let nextMode: Mode = modeRef.current;
+        if (parts.length === 1 || parts[1] === "terminal") {
+          if (modeRef.current !== "terminal") {
+            nextMode = "terminal";
+            onSetMode("terminal");
+            xtermRef.current?.writeln("\x1b[33mSwitched to terminal mode\x1b[0m");
+          }
+        } else if (parts[1] === "agent") {
+          if (modeRef.current !== "agent") {
+            nextMode = "agent";
+            onSetMode("agent");
+            xtermRef.current?.writeln("\x1b[33mSwitched to agent mode\x1b[0m");
+          }
+        }
+        if (nextMode === "agent") {
+          writePrompt(false);
+        }
+        return;
+      }
+
       if (line) {
         historyRef.current.push(line);
       }
@@ -70,9 +125,32 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       if (line) {
         onSend(line);
       } else {
-        writePrompt();
+        writePrompt(false);
       }
-    }, [onSend, writePrompt]);
+    }, [onSend, writePrompt, onSetMode]);
+
+    const trackTerminalHistory = useCallback(
+      (data: string) => {
+        if (data === "\r") {
+          const cmd = terminalLineRef.current.trim();
+          if (cmd) {
+            onTerminalHistory(cmd);
+          }
+          terminalLineRef.current = "";
+          return;
+        }
+
+        if (data === "\u007f") {
+          terminalLineRef.current = terminalLineRef.current.slice(0, -1);
+          return;
+        }
+
+        if (data.length === 1 && data >= " " && data !== "\u007f") {
+          terminalLineRef.current += data;
+        }
+      },
+      [onTerminalHistory]
+    );
 
     const handleBackspace = useCallback(() => {
       const t = xtermRef.current;
@@ -132,10 +210,10 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
 
     useImperativeHandle(ref, () => ({
       write: (text: string) => {
-        xtermRef.current?.write(text);
+        xtermRef.current?.write(text.replace(/\n/g, "\r\n"));
       },
       writeln: (text: string) => {
-        xtermRef.current?.writeln(text);
+        xtermRef.current?.write(text.replace(/\n/g, "\r\n") + "\r\n");
       },
       clear: () => {
         xtermRef.current?.clear();
@@ -149,6 +227,7 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       printWelcome: () => {
         const t = xtermRef.current;
         if (!t) return;
+        t.write("\r\x1b[2K");
         t.writeln(
           "\x1b[1;36m╭──────────────────────────────────────────────╮\x1b[0m"
         );
@@ -161,7 +240,7 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
         t.writeln(
           "\x1b[1;36m╰──────────────────────────────────────────────╯\x1b[0m"
         );
-        writePrompt();
+        writePrompt(false);
       },
     }));
 
@@ -216,19 +295,64 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       term.loadAddon(new WebLinksAddon());
 
       term.open(containerRef.current);
-      fitAddon.fit();
+      let fitFrame = 0;
+      const fitAndNotify = () => {
+        if (fitFrame) {
+          cancelAnimationFrame(fitFrame);
+        }
+        fitFrame = requestAnimationFrame(() => {
+          fitAddon.fit();
+          onTerminalResize(term.cols, term.rows);
+        });
+      };
+      fitAndNotify();
+      const delayedFit = window.setTimeout(fitAndNotify, 80);
+      if ("fonts" in document) {
+        document.fonts.ready.then(() => fitAndNotify());
+      }
 
       // Resize handling
       const observer = new ResizeObserver(() => {
-        fitAddon.fit();
+        fitAndNotify();
       });
       observer.observe(containerRef.current);
+      const handleWindowResize = () => fitAndNotify();
+      const handleVisibilityChange = () => {
+        if (document.visibilityState === "visible") {
+          fitAndNotify();
+        }
+      };
+      window.addEventListener("resize", handleWindowResize);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
 
       // Input handling
       term.onData((data) => {
-        if (streamingLock.current) return;
-
         const code = data.charCodeAt(0);
+
+        // Ctrl+E — toggle mode (always available, even while streaming)
+        if (code === 5) {
+          const next: Mode = modeRef.current === "agent" ? "terminal" : "agent";
+          onSetMode(next);
+          cancelLine(next !== "terminal");
+          const label = next === "terminal" ? "terminal" : "agent";
+          term.writeln(`\x1b[33mSwitched to ${label} mode\x1b[0m`);
+          if (next === "agent") {
+            writePrompt(false);
+          }
+          return;
+        }
+
+        if (modeRef.current === "terminal") {
+          if (code === 3) {
+            onTerminalSignal("SIGINT");
+            return;
+          }
+          trackTerminalHistory(data);
+          onTerminalInput(data);
+          return;
+        }
+
+        if (streamingLock.current) return;
 
         if (code === 13) {
           handleEnter();
@@ -243,7 +367,7 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
         } else if (code === 12) {
           // Ctrl+L
           term.clear();
-          writePrompt();
+          writePrompt(false);
         } else if (code === 4 && !bufferRef.current) {
           // Ctrl+D on empty line - do nothing for now
         } else if (code === 27 && data.length > 1 && data[1] === "[") {
@@ -261,9 +385,15 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       });
 
       xtermRef.current = term;
-      writePrompt();
+      fitAndNotify();
 
       return () => {
+        window.clearTimeout(delayedFit);
+        if (fitFrame) {
+          cancelAnimationFrame(fitFrame);
+        }
+        window.removeEventListener("resize", handleWindowResize);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
         observer.disconnect();
         term.dispose();
         xtermRef.current = null;
@@ -275,12 +405,28 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       streamingLock.current = streaming;
     }, [streaming]);
 
-    // Show new prompt after streaming finishes
     useEffect(() => {
-      if (!streaming) {
+      if (mode === "terminal") {
+        onTerminalStart();
+      }
+    }, [mode, onTerminalStart]);
+
+    useEffect(() => {
+      const fitAddon = fitAddonRef.current;
+      const term = xtermRef.current;
+      if (!term) return;
+      fitAddon.fit();
+      onTerminalResize(term.cols, term.rows);
+    }, [mode, onTerminalResize]);
+
+    // Show new prompt after streaming finishes
+    const prevStreamingRef = useRef(streaming);
+    useEffect(() => {
+      if (mode === "agent" && prevStreamingRef.current && !streaming) {
         writePrompt();
       }
-    }, [streaming, writePrompt]);
+      prevStreamingRef.current = streaming;
+    }, [streaming, writePrompt, mode]);
 
     return (
       <div

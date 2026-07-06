@@ -24,7 +24,7 @@ async def agent_status():
             {
                 "id": "opencode",
                 "name": "OpenCode",
-                "description": "Code-first AI agent",
+                "description": "OpenCode SDK agent via OpenCode server API",
                 "available": opencode_ok,
                 "default": False,
             },
