@@ -146,11 +146,13 @@ def _extract_tool_call(text: str) -> dict | None:
         return None
     try:
         obj = json.loads(match.group())
-        if "tool" in obj:
-            return obj
     except json.JSONDecodeError:
-        pass
-    return None
+        return None
+    if not isinstance(obj, dict) or "tool" not in obj:
+        return None
+    if not isinstance(obj.get("args"), dict):
+        obj["args"] = {k: v for k, v in obj.items() if k not in ("tool", "args")}
+    return obj
 
 
 async def _stream_text_once(text: str) -> AsyncIterator[str]:

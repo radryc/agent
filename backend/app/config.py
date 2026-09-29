@@ -36,8 +36,11 @@ class Settings(BaseSettings):
     )
     database_url: str = "sqlite+aiosqlite:////data/lagent.db"
 
-    # Local LLM (OpenAI-compatible)
+    # LLM (OpenAI-compatible). Defaults to the in-cluster Gemma; point
+    # LLM_BASE_URL/LLM_MODEL/LLM_API_KEY at a hosted provider (e.g. DeepSeek)
+    # to use that instead.
     llm_model: str = "gemma-4-E4B-it"
+    llm_api_key: str = ""
 
     # Gemini image generation
     gemini_api_key: str = ""
@@ -59,6 +62,11 @@ class Settings(BaseSettings):
     otel_metric_export_interval_ms: int = 15000
 
     guardian_url: str = "http://host.docker.internal:8090"
+    # Doctor query API. Defaults to the in-cluster doctor-query service; the
+    # docker-compose deployment overrides this with DOCTOR_QUERY_URL.
+    doctor_query_url: str = (
+        "http://k8s-svc-compute-k8s-main-doctor-doctor-query-query.doctor.svc.cluster.local:18080"
+    )
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 

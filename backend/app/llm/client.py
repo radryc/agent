@@ -13,11 +13,19 @@ logger = logging.getLogger(__name__)
 _client: httpx.AsyncClient | None = None
 
 
+def _auth_headers() -> dict[str, str]:
+    key = str(get_runtime("llm_api_key") or "").strip()
+    if not key:
+        return {}
+    return {"Authorization": f"Bearer {key}"}
+
+
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
             base_url=settings.llm_base_url,
+            headers=_auth_headers(),
             timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
         )
     return _client
@@ -77,10 +85,18 @@ async def _stream_tokens(
 
 
 async def check_health() -> bool:
+    # Hosted OpenAI-compatible providers (e.g. DeepSeek) expose /v1/models but
+    # not /health; the local llama.cpp server exposes /health.
     try:
         client = _get_client()
-        resp = await client.get("/health")
-        return resp.status_code == 200
+        for path in ("/health", "/v1/models"):
+            try:
+                resp = await client.get(path)
+            except Exception:
+                continue
+            if resp.status_code < 500:
+                return True
+        return False
     except Exception:
         return False
 

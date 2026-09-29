@@ -28,7 +28,7 @@ _DDG_MAX_RESULTS = 10
 _DDG_ATTEMPTS_PER_BACKEND = 2
 _DDG_RETRY_BASE_SECONDS = 1.0
 
-DOCTOR_QUERY_URL = "http://k8s-svc-lb-k8s-main-doctor-doctor-query-query-edge.doctor.svc.cluster.local:18080"
+DOCTOR_QUERY_URL = settings.doctor_query_url
 DOCTOR_TIMEOUT = httpx.Timeout(15.0)
 GUARDIAN_TIMEOUT = httpx.Timeout(15.0)
 MONOFS_SEARCH_TIMEOUT = 15.0
@@ -640,7 +640,7 @@ async def _tool_strata_stack_check(args: dict) -> str:
     checks: dict[str, dict[str, str]] = {}
 
     try:
-        guardian_response = await _guardian_get("/api/health")
+        guardian_response = await _guardian_get("/api/overview")
         checks["guardian_api"] = {"status": "ok", "details": _truncate(guardian_response, 500)}
     except Exception as e:
         checks["guardian_api"] = {"status": "error", "details": str(e)}

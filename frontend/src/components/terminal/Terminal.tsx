@@ -228,17 +228,23 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(
         const t = xtermRef.current;
         if (!t) return;
         t.write("\r\x1b[2K");
+
+        const title = "Outage Otto — SRE assistant";
+        const hint = "Type a request, /help for commands, Ctrl+C to cancel";
+        const width = Math.max(title.length, hint.length) + 2;
+        const pad = (len: number) => " ".repeat(width - len - 1);
+
         t.writeln(
-          "\x1b[1;36m╭──────────────────────────────────────────────╮\x1b[0m"
+          `\x1b[1;36m╭${"─".repeat(width)}╮\x1b[0m`
         );
         t.writeln(
-          "\x1b[1;36m│\x1b[0m   \x1b[1mAI Coding Agent\x1b[0m — programming assistant     \x1b[1;36m│\x1b[0m"
+          `\x1b[1;36m│\x1b[0m \x1b[1mOutage Otto\x1b[0m — SRE assistant${pad(title.length)}\x1b[1;36m│\x1b[0m`
         );
         t.writeln(
-          "\x1b[1;36m│\x1b[0m   \x1b[2mType a request, /help for commands, Ctrl+C to cancel\x1b[0m  \x1b[1;36m│\x1b[0m"
+          `\x1b[1;36m│\x1b[0m \x1b[2m${hint}\x1b[0m${pad(hint.length)}\x1b[1;36m│\x1b[0m`
         );
         t.writeln(
-          "\x1b[1;36m╰──────────────────────────────────────────────╯\x1b[0m"
+          `\x1b[1;36m╰${"─".repeat(width)}╯\x1b[0m`
         );
         writePrompt(false);
       },

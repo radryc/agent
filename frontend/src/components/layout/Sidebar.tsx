@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useChatStore } from "../../stores/chatStore";
 import AgentSwitch from "./AgentSwitch";
-import { Plus, Trash2, Settings, MessageSquare, X, Terminal, Pencil } from "lucide-react";
+import AgentAvatar from "../chat/AgentAvatar";
+import { Plus, Trash2, Settings, MessageSquare, X, Pencil } from "lucide-react";
 import type { AgentType } from "../../types";
 
 interface SidebarProps {
@@ -62,18 +63,18 @@ export default function Sidebar({ onClose }: SidebarProps) {
     <div className="flex flex-col h-full bg-dark-800 border-r border-dark-600">
       {/* Header */}
       <div className="flex items-center gap-3 p-4 border-b border-dark-600">
-        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-accent-blue/20">
-          <Terminal size={16} className="text-accent-blue" />
-        </div>
+        <AgentAvatar size="sm" still />
         <div className="flex-1 min-w-0">
           <h1 className="text-sm font-semibold text-gray-100 truncate">
-            AI Coding Agent
+            Outage Otto
           </h1>
-          <p className="text-xs text-gray-500">Programming Assistant</p>
+          <p className="text-xs text-gray-500">SRE Assistant</p>
         </div>
         <button
           onClick={onClose}
-          className="lg:hidden p-1 rounded hover:bg-dark-600 transition-colors"
+          title="Hide sidebar"
+          aria-label="Hide sidebar"
+          className="p-1 rounded hover:bg-dark-600 transition-colors"
         >
           <X size={16} />
         </button>
