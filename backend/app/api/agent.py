@@ -5,8 +5,10 @@ import logging
 from fastapi import APIRouter
 
 from app.agent.opencode import is_opencode_available, list_opencode_models, list_opencode_providers
+from app.agent.personas import list_personas, resolve_engine
+from app.agent.workspace import workspace_snapshot
 from app.llm.client import list_models as list_llm_models
-from app.config import get_runtime
+from app.config import get_runtime, runtime_bool
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -14,10 +16,33 @@ router = APIRouter()
 
 @router.get("/api/agent/status")
 async def agent_status():
-    """Return available agents and their status."""
+    """Return available personas, their engines, and workspace state."""
     opencode_ok = await is_opencode_available()
 
+    personas = []
+    for persona in list_personas():
+        engine = await resolve_engine(persona.id)
+        personas.append({
+            "id": persona.id,
+            "name": persona.name,
+            "role": persona.role,
+            "summary": persona.summary,
+            "avatar": persona.avatar,
+            "accent": persona.accent,
+            "engine": {
+                "id": engine.id,
+                "label": engine.label,
+                "available": engine.available,
+                "detail": engine.detail,
+            },
+        })
+
     return {
+        "personas": personas,
+        "workspace": workspace_snapshot(),
+        "auto_switch_enabled": runtime_bool("auto_switch_enabled", default=True),
+        "auto_push_enabled": runtime_bool("auto_push_enabled", default=False),
+        # Legacy shape (kept for older clients)
         "agents": [
             {
                 "id": "local",

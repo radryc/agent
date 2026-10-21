@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, Response
 
 from app.config import settings
+from app.auth.oidc import oidc
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["guardian"])
@@ -18,7 +19,8 @@ async def _guardian_get_first(paths: list[str]) -> tuple[int, bytes, str]:
     last_body = b'{"error":"guardian unreachable"}'
     last_ct = "application/json"
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        headers = await oidc.auth_headers()
+        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
             for raw_path in paths:
                 url = f"{settings.guardian_url}/{raw_path.lstrip('/')}"
                 r = await client.get(url)
@@ -37,7 +39,8 @@ async def _guardian_get_first(paths: list[str]) -> tuple[int, bytes, str]:
 async def _guardian_get(path: str) -> tuple[int, bytes, str]:
     url = f"{settings.guardian_url}/{path.lstrip('/')}"
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        headers = await oidc.auth_headers()
+        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
             r = await client.get(url)
             ct = r.headers.get("content-type", "application/json")
             return r.status_code, r.content, ct

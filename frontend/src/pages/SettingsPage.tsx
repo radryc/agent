@@ -1,21 +1,28 @@
 import { useEffect, useState } from "react";
-import { api, AgentSettings, AgentModelsResponse } from "../api/client";
+import { api, AgentSettings, AgentModelsResponse, AuthStatus, DeviceLoginStart, PersonaStatus } from "../api/client";
 import AgentAvatar from "../components/chat/AgentAvatar";
-import { Activity, Cpu, Server, Save, Bot, KeyRound, Terminal, RefreshCw } from "lucide-react";
+import { Activity, Cpu, Server, Save, Bot, KeyRound, Terminal, RefreshCw, Code2, FolderCode, Zap, ShieldCheck, LogIn, LogOut, ExternalLink } from "lucide-react";
 
 export default function SettingsPage() {
   const [health, setHealth] = useState<{ status: string; llm: string; version: string } | null>(null);
   const [agentModel, setAgentModel] = useState("gemma-4-E4B-it-GGUF (Q4_K_M)");
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [models, setModels] = useState<AgentModelsResponse | null>(null);
+  const [personas, setPersonas] = useState<PersonaStatus[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [deviceLogin, setDeviceLogin] = useState<DeviceLoginStart | null>(null);
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
 
   function loadData() {
     api.health().then(setHealth).catch(() => {});
     api.agentInfo().then((a) => setAgentModel(a.model)).catch(() => {});
     api.getSettings().then(setSettings).catch(() => {});
+    api.agentStatus().then((s) => setPersonas(s.personas)).catch(() => {});
+    api.authStatus().then(setAuthStatus).catch(() => {});
     refreshModels();
   }
 
@@ -30,16 +37,95 @@ export default function SettingsPage() {
     setSettings((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
+  useEffect(() => {
+    if (!deviceLogin) return;
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const poll = async () => {
+      try {
+        const result = await api.pollDeviceLogin();
+        if (cancelled) return;
+        if (result.status === "authorized") {
+          setDeviceLogin(null);
+          setAuthError("");
+          api.authStatus().then(setAuthStatus).catch(() => {});
+          return;
+        }
+        if (result.status === "expired" || result.status === "denied") {
+          setDeviceLogin(null);
+          setAuthError(
+            result.status === "expired"
+              ? "SSO login expired. Try again."
+              : "SSO login was denied."
+          );
+          return;
+        }
+        timer = window.setTimeout(poll, (result.interval || deviceLogin.interval) * 1000);
+      } catch {
+        if (!cancelled) {
+          setAuthError("SSO polling failed. Check the backend and OIDC settings.");
+          setDeviceLogin(null);
+        }
+      }
+    };
+
+    timer = window.setTimeout(poll, deviceLogin.interval * 1000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [deviceLogin]);
+
+  async function startSso() {
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const start = await api.startDeviceLogin();
+      setDeviceLogin(start);
+      const url = start.verification_uri_complete || start.verification_uri;
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      setAuthError(e instanceof Error ? e.message : "Could not start SSO login.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOutSso() {
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      await api.logoutSso();
+      setAuthStatus(await api.authStatus());
+      setDeviceLogin(null);
+    } catch {
+      setAuthError("Could not sign out.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
   async function save() {
     if (!settings) return;
     setSaving(true);
     try {
       const payload: Partial<AgentSettings> = { ...settings };
+      delete payload.workspace;
       if (!payload.gemini_api_key?.trim()) {
         delete payload.gemini_api_key;
       }
       if (!payload.opencode_api_key?.trim()) {
         delete payload.opencode_api_key;
+      }
+      if (!payload.steve_llm_api_key?.trim()) {
+        delete payload.steve_llm_api_key;
+      }
+      if (!payload.agent_oidc_client_secret?.trim()) {
+        delete payload.agent_oidc_client_secret;
+      }
+      if (!payload.agent_oidc_token?.trim()) {
+        delete payload.agent_oidc_token;
       }
       const updated = await api.saveSettings(payload);
       setSettings(updated);
@@ -71,12 +157,12 @@ export default function SettingsPage() {
         <section className="glass rounded-xl p-6 space-y-4">
           <h2 className="text-base font-semibold flex items-center gap-2 text-gray-200">
             <Bot size={16} className="text-accent-blue" />
-            Agent
+            Otto — SRE Persona
           </h2>
           <div className="flex items-center gap-4">
             <AgentAvatar size="lg" />
             <div>
-              <p className="font-semibold">OutageOtto</p>
+              <p className="font-semibold">Outage Otto</p>
               <div className="flex items-center gap-2 mt-0.5">
                 <Cpu size={12} className="text-accent-purple" />
                 <span className="text-xs text-gray-500">{agentModel}</span>
@@ -109,7 +195,7 @@ export default function SettingsPage() {
 
           <div className="space-y-2">
             <label className="block text-xs text-gray-500 uppercase tracking-wide">
-              System Prompt
+              Otto System Prompt (SRE)
             </label>
             <textarea
               rows={8}
@@ -118,6 +204,200 @@ export default function SettingsPage() {
               className="w-full rounded-lg bg-dark-700 border border-dark-600 p-3 text-sm text-gray-200 focus:outline-none focus:border-accent-blue resize-y font-mono leading-relaxed"
               placeholder="Loading…"
             />
+          </div>
+        </section>
+
+        {/* Steve — Software Engineer Persona */}
+        <section className="glass rounded-xl p-6 space-y-5">
+          <h2 className="text-base font-semibold flex items-center gap-2 text-gray-200">
+            <Code2 size={16} className="text-accent-purple" />
+            Steve — Software Engineer
+          </h2>
+          <div className="flex items-center gap-4">
+            <AgentAvatar size="lg" persona="steve" />
+            <div>
+              <p className="font-semibold">Software Steve</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Coding persona — edits, commits and pushes code in the MonoFS workspace
+              </p>
+            </div>
+          </div>
+
+          {/* Engine */}
+          <div className="space-y-2">
+            <label className="block text-xs text-gray-500 uppercase tracking-wide">Coding Engine</label>
+            <select
+              value={settings?.steve_engine ?? ""}
+              onChange={(e) => update("steve_engine", e.target.value)}
+              className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-purple"
+            >
+              <option value="">Auto — OpenCode → External API → Local</option>
+              <option value="opencode">OpenCode server</option>
+              <option value="deepseek">External API (OpenAI-compatible / DeepSeek)</option>
+              <option value="local">Local Gemma (shared with Otto)</option>
+            </select>
+            <p className="text-xs text-gray-600">
+              Detected:{" "}
+              {personas.find((p) => p.id === "steve") ? (
+                <code className="text-accent-purple">
+                  {personas.find((p) => p.id === "steve")!.engine.label} —{" "}
+                  {personas.find((p) => p.id === "steve")!.engine.available ? "available" : "unavailable"}
+                </code>
+              ) : (
+                "checking…"
+              )}
+            </p>
+          </div>
+
+          {/* External API profile */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">API Base URL</label>
+              <input
+                type="text"
+                value={settings?.steve_llm_base_url ?? "https://api.deepseek.com"}
+                onChange={(e) => update("steve_llm_base_url", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-purple"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Model</label>
+              <input
+                type="text"
+                value={settings?.steve_llm_model ?? "deepseek-chat"}
+                onChange={(e) => update("steve_llm_model", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-purple"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-xs text-gray-500 uppercase tracking-wide">
+              External API Key
+              <span className="ml-1 normal-case text-gray-600">(DeepSeek or any OpenAI-compatible provider)</span>
+            </label>
+            <input
+              type="password"
+              placeholder={
+                settings?.steve_llm_api_key_set
+                  ? `Configured: ${settings.steve_llm_api_key_masked ?? "(hidden)"}`
+                  : "Paste the API key for Steve's coding engine"
+              }
+              value={settings?.steve_llm_api_key ?? ""}
+              onChange={(e) => update("steve_llm_api_key", e.target.value)}
+              className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-purple"
+            />
+            <p className="text-xs text-gray-600">
+              Leave empty to keep the current key. Used when the coding engine resolves to the external API.
+              To use OpenCode instead, configure the OpenCode server URL below.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-xs text-gray-500 uppercase tracking-wide">
+              Steve System Prompt (Software Engineer)
+            </label>
+            <textarea
+              rows={8}
+              value={settings?.steve_system_prompt ?? ""}
+              onChange={(e) => update("steve_system_prompt", e.target.value)}
+              className="w-full rounded-lg bg-dark-700 border border-dark-600 p-3 text-sm text-gray-200 focus:outline-none focus:border-accent-purple resize-y font-mono leading-relaxed"
+              placeholder="Loading…"
+            />
+          </div>
+
+          {/* Switching behaviour */}
+          <div className="space-y-3 pt-1">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings?.auto_switch_enabled ?? true}
+                onChange={(e) => update("auto_switch_enabled", e.target.checked)}
+                style={{ accentColor: "var(--color-accent-purple, #9333ea)" }}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-200">Auto-switch Otto ↔ Steve</span>
+                <span className="block text-xs text-gray-600">
+                  Route each message by context (mentions, topic classifier, sticky conversation).
+                  Disable to control the persona manually from the sidebar.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings?.auto_push_enabled ?? false}
+                onChange={(e) => update("auto_push_enabled", e.target.checked)}
+                style={{ accentColor: "var(--color-accent-purple, #9333ea)" }}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-200 flex items-center gap-1.5">
+                  <Zap size={12} className="text-amber-400" />
+                  Autonomous push
+                </span>
+                <span className="block text-xs text-gray-600">
+                  When enabled, Steve can commit and push workspace changes without asking first.
+                  Leave off to require explicit approval (confirm=true) for every commit/push.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          {/* MonoFS workspace */}
+          <div className="rounded-lg bg-dark-700 border border-dark-600 p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold flex items-center gap-2 text-gray-200">
+                <FolderCode size={14} className="text-accent-purple" />
+                MonoFS Workspace
+              </h3>
+              <span
+                className={`text-xs font-medium ${
+                  settings?.workspace?.mounted ? "text-green-400" : "text-amber-400"
+                }`}
+              >
+                {settings?.workspace?.mounted
+                  ? `mounted · ${settings.workspace.socket ? "session socket ok" : "no socket"}`
+                  : "not mounted"}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500 uppercase tracking-wide">Router</label>
+                <input
+                  type="text"
+                  placeholder="monofs-router:8081 or host:port"
+                  value={settings?.monofs_router ?? ""}
+                  onChange={(e) => update("monofs_router", e.target.value)}
+                  className="w-full rounded-lg bg-dark-800 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-accent-purple"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500 uppercase tracking-wide">Mount</label>
+                <input
+                  type="text"
+                  value={settings?.monofs_mount ?? "/workspace"}
+                  onChange={(e) => update("monofs_mount", e.target.value)}
+                  className="w-full rounded-lg bg-dark-800 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-accent-purple"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500 uppercase tracking-wide">Overlay</label>
+                <input
+                  type="text"
+                  value={settings?.monofs_overlay ?? "/data/monofs-overlay"}
+                  onChange={(e) => update("monofs_overlay", e.target.value)}
+                  className="w-full rounded-lg bg-dark-800 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-accent-purple"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-gray-600">
+              The router address is read at container start (MONOFS_ROUTER) to mount the writable
+              workspace. Changes here apply to tools that shell out to monofs-session; restart the
+              backend to (re)mount after changing the router.
+            </p>
           </div>
         </section>
 
@@ -310,6 +590,184 @@ export default function SettingsPage() {
               placeholder="Optional OpenCode-specific system prompt"
             />
           </div>
+        </section>
+
+        {/* SSO / OIDC */}
+        <section className="glass rounded-xl p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold flex items-center gap-2 text-gray-200">
+              <ShieldCheck size={16} className="text-emerald-400" />
+              SSO / OIDC
+            </h2>
+            <span
+              className={`text-xs font-medium ${
+                authStatus?.authenticated ? "text-green-400" : "text-amber-400"
+              }`}
+            >
+              {authStatus?.authenticated
+                ? `signed in${authStatus.source ? ` · ${authStatus.source}` : ""}`
+                : "not signed in"}
+            </span>
+          </div>
+
+          <p className="text-xs text-gray-600">
+            Used by Doctor log/trace queries, Guardian API calls, and MonoFS tools.
+            Client credentials are used automatically; device flow is for interactive SSO.
+          </p>
+
+          {authStatus?.authenticated && (
+            <div className="rounded-lg bg-dark-700 border border-dark-600 p-3 flex items-center justify-between gap-4">
+              <div className="text-xs text-gray-400 space-y-0.5">
+                {authStatus.subject && <div>Subject: <code className="text-gray-200">{authStatus.subject}</code></div>}
+                {authStatus.issuer && <div>Issuer: <code className="text-gray-200 break-all">{authStatus.issuer}</code></div>}
+                {authStatus.expires_at && (
+                  <div>Expires: {new Date(authStatus.expires_at * 1000).toLocaleString()}</div>
+                )}
+              </div>
+              <button
+                onClick={signOutSso}
+                disabled={authBusy}
+                className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
+              >
+                <LogOut size={12} /> Sign out
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2 col-span-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Issuer</label>
+              <input
+                type="text"
+                placeholder="http://authentik.authentik.svc.cluster.local:9000/application/o/monofs/"
+                value={settings?.agent_oidc_issuer ?? ""}
+                onChange={(e) => update("agent_oidc_issuer", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2 col-span-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Token URL</label>
+              <input
+                type="text"
+                placeholder="http://authentik.authentik.svc.cluster.local:9000/application/o/token/"
+                value={settings?.agent_oidc_token_url ?? ""}
+                onChange={(e) => update("agent_oidc_token_url", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2 col-span-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Device Authorization URL</label>
+              <input
+                type="text"
+                placeholder="http://authentik.authentik.svc.cluster.local:9000/application/o/device/"
+                value={settings?.agent_oidc_device_authorization_url ?? ""}
+                onChange={(e) => update("agent_oidc_device_authorization_url", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Client ID</label>
+              <input
+                type="text"
+                placeholder="monofs"
+                value={settings?.agent_oidc_client_id ?? ""}
+                onChange={(e) => update("agent_oidc_client_id", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Client Secret</label>
+              <input
+                type="password"
+                placeholder={
+                  settings?.agent_oidc_client_secret_set
+                    ? `Configured: ${settings.agent_oidc_client_secret_masked ?? "(hidden)"}`
+                    : "Optional for device flow"
+                }
+                value={settings?.agent_oidc_client_secret ?? ""}
+                onChange={(e) => update("agent_oidc_client_secret", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Audience</label>
+              <input
+                type="text"
+                placeholder="monofs"
+                value={settings?.agent_oidc_audience ?? ""}
+                onChange={(e) => update("agent_oidc_audience", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Scope</label>
+              <input
+                type="text"
+                placeholder="openid"
+                value={settings?.agent_oidc_scope ?? ""}
+                onChange={(e) => update("agent_oidc_scope", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2 col-span-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">
+                Static token
+                <span className="ml-1 normal-case text-gray-600">(break-glass / pre-issued bearer token)</span>
+              </label>
+              <input
+                type="password"
+                placeholder={
+                  settings?.agent_oidc_token_set
+                    ? `Configured: ${settings.agent_oidc_token_masked ?? "(hidden)"}`
+                    : "Optional — takes precedence over OIDC flows"
+                }
+                value={settings?.agent_oidc_token ?? ""}
+                onChange={(e) => update("agent_oidc_token", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={startSso}
+              disabled={authBusy || !settings?.agent_oidc_device_authorization_url}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
+            >
+              <LogIn size={13} />
+              {authBusy ? "Starting…" : "Sign in with SSO"}
+            </button>
+            <button
+              onClick={() => api.authStatus().then(setAuthStatus).catch(() => {})}
+              className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+            >
+              <RefreshCw size={12} /> Refresh status
+            </button>
+          </div>
+
+          {deviceLogin && (
+            <div className="rounded-lg bg-dark-700 border border-emerald-700/50 p-4 space-y-2">
+              <p className="text-xs text-gray-400">
+                Open the verification page and enter this code:
+              </p>
+              <div className="text-2xl font-mono tracking-widest text-emerald-300">
+                {deviceLogin.user_code}
+              </div>
+              <a
+                href={deviceLogin.verification_uri_complete || deviceLogin.verification_uri}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300"
+              >
+                Open verification page <ExternalLink size={11} />
+              </a>
+              <p className="text-xs text-gray-600">
+                Waiting for approval… the code expires in {deviceLogin.expires_in}s.
+              </p>
+            </div>
+          )}
+
+          {authError && <p className="text-xs text-red-400">{authError}</p>}
         </section>
 
         {/* System Status */}

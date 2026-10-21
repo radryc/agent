@@ -15,6 +15,9 @@ export default function ChatPage() {
   const {
     activeSessionId,
     activeAgent,
+    activePersona,
+    streamPersona,
+    streamEngine,
     sessions,
     switchSession,
     sendMessage,
@@ -39,6 +42,17 @@ export default function ChatPage() {
   const [titleDraft, setTitleDraft] = useState("");
 
   const prompt = AGENT_PROMPTS[activeAgent] || "$ ";
+
+  const personaLabel =
+    activePersona === "auto"
+      ? streamPersona
+        ? streamPersona === "steve"
+          ? "Steve"
+          : "Otto"
+        : "Auto"
+      : activePersona === "steve"
+        ? "Steve"
+        : "Otto";
 
   useEffect(() => {
     if (sessionId && sessionId !== activeSessionId) {
@@ -186,10 +200,11 @@ export default function ChatPage() {
           </span>
         )}
         <span className="text-gray-700">|</span>
-        <span className="text-gray-500">Agent</span>
-        <span className="text-accent-blue font-medium">
-          {useChatStore.getState().activeAgent === "local" ? "Local" : "OpenCode"}
-        </span>
+        <span className="text-gray-500">Persona</span>
+        <span className="text-accent-purple font-medium">{personaLabel}</span>
+        {streamEngine && activePersona === "auto" && streamPersona && (
+          <span className="text-gray-600 text-[10px]">{streamEngine}</span>
+        )}
         <span className="text-gray-700">|</span>
         <span className="text-gray-500">Mode</span>
         <span

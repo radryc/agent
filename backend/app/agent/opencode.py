@@ -47,6 +47,7 @@ class OpenCodeAgentService:
         prompt: str,
         session_id: str | None = None,
         cwd: str | None = None,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[str]:
         server_url = _server_url()
         if not server_url:
@@ -70,8 +71,16 @@ class OpenCodeAgentService:
 
         model = str(get_runtime("opencode_model") or "").strip()
         provider_id = str(get_runtime("opencode_provider_id") or "anthropic").strip()
-        system_prompt = str(get_runtime("opencode_system_prompt") or "").strip()
-        working_dir = cwd or os.getcwd()
+        override_prompt = str(system_prompt or "").strip()
+        system_prompt = override_prompt or str(get_runtime("opencode_system_prompt") or "").strip()
+
+        if cwd:
+            working_dir = cwd
+        else:
+            # Prefer the writable MonoFS workspace so code edits land in the mount.
+            from app.agent.workspace import mount_active, mount_root
+
+            working_dir = str(mount_root()) if mount_active() else os.getcwd()
         resume_id = self._resume_by_session.get(session_id or "")
 
         logger.info(
@@ -176,6 +185,9 @@ async def run_opencode(
     prompt: str,
     session_id: str | None = None,
     cwd: str | None = None,
+    system_prompt: str | None = None,
 ) -> AsyncIterator[str]:
-    async for chunk in _opencode_service.stream(prompt, session_id=session_id, cwd=cwd):
+    async for chunk in _opencode_service.stream(
+        prompt, session_id=session_id, cwd=cwd, system_prompt=system_prompt
+    ):
         yield chunk

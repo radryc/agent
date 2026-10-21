@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Message, Session, WSIncoming, AgentType, Mode } from "../types";
+import type { Message, Session, WSIncoming, AgentType, PersonaType, PersonaId, Mode } from "../types";
 import { ChatWebSocket } from "../api/websocket";
 import { api } from "../api/client";
 
@@ -11,6 +11,10 @@ interface ChatState {
   streamContent: string;
   ws: ChatWebSocket | null;
   activeAgent: AgentType;
+  activePersona: PersonaType;
+  /** Persona that answered the current/streamed turn (from the WS persona event). */
+  streamPersona: PersonaId | null;
+  streamEngine: string | null;
   mode: Mode;
   cwd: string;
   execOutput: string;
@@ -32,6 +36,7 @@ interface ChatState {
   sendTerminalSignal: (signal?: string) => void;
   addTerminalHistory: (command: string) => void;
   setActiveAgent: (agent: AgentType) => void;
+  setActivePersona: (persona: PersonaType) => void;
   setMode: (mode: Mode) => void;
 }
 
@@ -43,6 +48,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamContent: "",
   ws: null,
   activeAgent: "local",
+  activePersona: "auto",
+  streamPersona: null,
+  streamEngine: null,
   mode: "agent",
   cwd: "~",
   execOutput: "",
@@ -60,6 +68,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         get().loadSessions();
       }
 
+      if (msg.type === "persona") {
+        set({
+          streamPersona: (msg.data as PersonaId) || null,
+          streamEngine: msg.engine_label || msg.engine || null,
+        });
+      }
+
       if (msg.type === "token" && msg.data) {
         set((s) => ({ streamContent: s.streamContent + msg.data }));
       }
@@ -72,6 +87,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             session_id: msg.session_id || state.activeSessionId || "",
             role: "assistant",
             content,
+            persona: get().streamPersona,
             created_at: new Date().toISOString(),
           };
           set((s) => ({
@@ -85,7 +101,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       if (msg.type === "error") {
-        set({ isStreaming: false, streamContent: "", execOutput: "" });
+        set({ isStreaming: false, streamContent: "", execOutput: "", streamPersona: null });
       }
 
       if (msg.type === "exec_output" && msg.data) {
@@ -177,9 +193,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         session_id: id,
         role: m.role as "user" | "assistant",
         content: m.content,
+        persona: (m.persona as PersonaId) ?? null,
         created_at: m.created_at,
       }));
-      set({ activeSessionId: id, messages, isStreaming: false, streamContent: "" });
+      set({
+        activeSessionId: id,
+        messages,
+        isStreaming: false,
+        streamContent: "",
+        streamPersona: null,
+        streamEngine: null,
+      });
       if (get().mode === "terminal") {
         get().startTerminal();
       }
@@ -227,7 +251,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         type: "message",
         data: payloadText,
         session_id: state.activeSessionId || undefined,
-        agent: state.activeAgent,
+        persona: state.activePersona,
       }) ?? false;
 
     if (!sent) {
@@ -246,6 +270,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...s.messages, userMsg],
       isStreaming: true,
       streamContent: "",
+      streamPersona: null,
     }));
 
     return true;
@@ -307,6 +332,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setActiveAgent: (agent: AgentType) => {
     set({ activeAgent: agent });
+  },
+
+  setActivePersona: (persona: PersonaType) => {
+    set({ activePersona: persona });
   },
 
   setMode: (mode: Mode) => {

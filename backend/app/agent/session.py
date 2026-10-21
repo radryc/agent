@@ -22,6 +22,7 @@ class SessionRow(Base):
 
     id = Column(String, primary_key=True)
     title = Column(String, default="New Chat")
+    active_persona = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -33,6 +34,7 @@ class MessageRow(Base):
     session_id = Column(String, index=True, nullable=False)
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
+    persona = Column(String, nullable=True)
     position = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -60,12 +62,30 @@ _engine = None
 _session_factory = None
 
 
+def _migrate_schema_sync(conn) -> None:
+    """Add persona columns to pre-existing SQLite databases (create_all won't)."""
+    migrations = (
+        ("sessions", "active_persona", "ALTER TABLE sessions ADD COLUMN active_persona VARCHAR"),
+        ("messages", "persona", "ALTER TABLE messages ADD COLUMN persona VARCHAR"),
+    )
+    for table, column, ddl in migrations:
+        try:
+            rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+            existing = {row[1] for row in rows}
+            if column not in existing:
+                conn.exec_driver_sql(ddl)
+                logger.info("Migrated database: added %s.%s", table, column)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Schema migration for %s.%s failed: %s", table, column, exc)
+
+
 async def init_db() -> None:
     global _engine, _session_factory
     _engine = create_async_engine(settings.database_url, echo=False)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrate_schema_sync)
     logger.info("Database initialized at %s", settings.database_url)
 
 
@@ -79,13 +99,27 @@ def _get_session() -> AsyncSession:
     return _session_factory()
 
 
-async def create_session(title: str = "New Chat") -> dict:
+async def create_session(title: str = "New Chat", persona: str | None = None) -> dict:
     session_id = str(uuid.uuid4())
     now = datetime.utcnow()
     async with _get_session() as db:
-        db.add(SessionRow(id=session_id, title=title, created_at=now, updated_at=now))
+        db.add(
+            SessionRow(
+                id=session_id,
+                title=title,
+                active_persona=persona,
+                created_at=now,
+                updated_at=now,
+            )
+        )
         await db.commit()
-    return {"id": session_id, "title": title, "created_at": now, "updated_at": now}
+    return {
+        "id": session_id,
+        "title": title,
+        "active_persona": persona,
+        "created_at": now,
+        "updated_at": now,
+    }
 
 
 async def list_sessions() -> list[dict]:
@@ -98,6 +132,7 @@ async def list_sessions() -> list[dict]:
             {
                 "id": r.id,
                 "title": r.title,
+                "active_persona": r.active_persona,
                 "created_at": r.created_at,
                 "updated_at": r.updated_at,
             }
@@ -121,6 +156,7 @@ async def get_session(session_id: str) -> dict | None:
                 "session_id": m.session_id,
                 "role": m.role,
                 "content": m.content,
+                "persona": m.persona,
                 "created_at": m.created_at,
             }
             for m in msg_result.scalars().all()
@@ -128,6 +164,7 @@ async def get_session(session_id: str) -> dict | None:
         return {
             "id": row.id,
             "title": row.title,
+            "active_persona": row.active_persona,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
             "messages": messages,
@@ -169,7 +206,21 @@ async def update_session_title(session_id: str, title: str) -> dict | None:
         }
 
 
-async def add_message(session_id: str, role: str, content: str) -> dict:
+async def set_active_persona(session_id: str, persona: str | None) -> None:
+    async with _get_session() as db:
+        row = await db.get(SessionRow, session_id)
+        if not row:
+            return
+        row.active_persona = persona
+        await db.commit()
+
+
+async def add_message(
+    session_id: str,
+    role: str,
+    content: str,
+    persona: str | None = None,
+) -> dict:
     msg_id = str(uuid.uuid4())
     now = datetime.utcnow()
     async with _get_session() as db:
@@ -183,6 +234,7 @@ async def add_message(session_id: str, role: str, content: str) -> dict:
                 session_id=session_id,
                 role=role,
                 content=content,
+                persona=persona,
                 position=position,
                 created_at=now,
             )
@@ -196,6 +248,7 @@ async def add_message(session_id: str, role: str, content: str) -> dict:
         "session_id": session_id,
         "role": role,
         "content": content,
+        "persona": persona,
         "created_at": now,
     }
 

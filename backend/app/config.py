@@ -42,11 +42,40 @@ class Settings(BaseSettings):
     llm_model: str = "gemma-4-E4B-it"
     llm_api_key: str = ""
 
+    # Steve persona (software engineering agent). Engine auto-detect order is
+    # OpenCode -> DeepSeek -> local Gemma unless STEVE_ENGINE forces one.
+    steve_engine: str = ""  # "", "auto", "opencode", "deepseek", "local"
+    steve_llm_base_url: str = "https://api.deepseek.com"
+    steve_llm_model: str = "deepseek-chat"
+    steve_llm_api_key: str = ""
+    steve_system_prompt: str = ""
+
+    # Persona switching
+    auto_switch_enabled: bool = True
+    auto_push_enabled: bool = False
+
+    # MonoFS writable workspace (used by Steve to edit/commit/push code)
+    monofs_router: str = ""
+    monofs_mount: str = "/workspace"
+    monofs_overlay: str = "/data/monofs-overlay"
+
     # Gemini image generation
     gemini_api_key: str = ""
     gemini_image_model: str = "imagen-3.0-generate-002"
     gemini_image_aspect_ratio: str = "16:9"
     gemini_image_count: int = 1
+
+    # OIDC / SSO for Doctor, Guardian, and MonoFS calls.
+    # Client credentials are the machine-to-machine path; the device flow is
+    # the interactive SSO path (Settings -> SSO -> Sign in).
+    agent_oidc_issuer: str = ""
+    agent_oidc_token_url: str = ""
+    agent_oidc_device_authorization_url: str = ""
+    agent_oidc_client_id: str = ""
+    agent_oidc_client_secret: str = ""
+    agent_oidc_audience: str = ""
+    agent_oidc_scope: str = "openid"
+    agent_oidc_token: str = ""
 
     # OpenCode agent
     opencode_api_key: str = ""
@@ -86,13 +115,43 @@ def get_all_runtime_settings() -> dict:
         "gemini_image_model": settings.gemini_image_model,
         "gemini_image_aspect_ratio": settings.gemini_image_aspect_ratio,
         "gemini_image_count": settings.gemini_image_count,
+        "agent_oidc_issuer": settings.agent_oidc_issuer,
+        "agent_oidc_token_url": settings.agent_oidc_token_url,
+        "agent_oidc_device_authorization_url": settings.agent_oidc_device_authorization_url,
+        "agent_oidc_client_id": settings.agent_oidc_client_id,
+        "agent_oidc_client_secret": settings.agent_oidc_client_secret,
+        "agent_oidc_audience": settings.agent_oidc_audience,
+        "agent_oidc_scope": settings.agent_oidc_scope,
+        "agent_oidc_token": settings.agent_oidc_token,
         "opencode_api_key": settings.opencode_api_key,
         "opencode_server_url": settings.opencode_server_url,
         "opencode_model": settings.opencode_model,
         "opencode_provider_id": settings.opencode_provider_id,
         "opencode_system_prompt": settings.opencode_system_prompt,
+        "steve_engine": settings.steve_engine,
+        "steve_llm_base_url": settings.steve_llm_base_url,
+        "steve_llm_model": settings.steve_llm_model,
+        "steve_llm_api_key": settings.steve_llm_api_key,
+        "steve_system_prompt": settings.steve_system_prompt,
+        "auto_switch_enabled": settings.auto_switch_enabled,
+        "auto_push_enabled": settings.auto_push_enabled,
+        "monofs_router": settings.monofs_router,
+        "monofs_mount": settings.monofs_mount,
+        "monofs_overlay": settings.monofs_overlay,
     }
     return {**defaults, **_runtime_overrides}
+
+
+def runtime_bool(key: str, default: bool = False) -> bool:
+    """Return a runtime setting coerced to bool."""
+    value = get_runtime(key)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def is_runtime_configured(key: str) -> bool:

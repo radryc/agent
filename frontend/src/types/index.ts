@@ -3,12 +3,14 @@ export interface Message {
   session_id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  persona?: PersonaId | null;
   created_at: string;
 }
 
 export interface Session {
   id: string;
   title: string;
+  active_persona?: PersonaId | null;
   created_at: string;
   updated_at: string;
   messages?: Message[];
@@ -26,12 +28,16 @@ export interface HealthStatus {
   version: string;
 }
 
+export type PersonaId = "otto" | "steve";
+export type PersonaType = "auto" | PersonaId;
+
 export interface WSIncoming {
   type:
     | "token"
     | "done"
     | "error"
     | "session"
+    | "persona"
     | "pong"
     | "exec_output"
     | "exec_done"
@@ -49,6 +55,14 @@ export interface WSIncoming {
   cols?: number;
   rows?: number;
   history?: string[];
+  // persona event fields
+  name?: string;
+  role?: string;
+  avatar?: string;
+  accent?: string;
+  engine?: string;
+  engine_label?: string;
+  reason?: string;
 }
 
 export type AgentType = "local" | "opencode";
@@ -68,6 +82,7 @@ export interface WSOutgoing {
   data?: string;
   session_id?: string;
   agent?: AgentType;
+  persona?: PersonaType;
   cols?: number;
   rows?: number;
   signal?: string;

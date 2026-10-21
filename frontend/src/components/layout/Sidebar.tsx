@@ -4,24 +4,30 @@ import { useChatStore } from "../../stores/chatStore";
 import AgentSwitch from "./AgentSwitch";
 import AgentAvatar from "../chat/AgentAvatar";
 import { Plus, Trash2, Settings, MessageSquare, X, Pencil } from "lucide-react";
-import type { AgentType } from "../../types";
+import type { PersonaType } from "../../types";
 
 interface SidebarProps {
   onClose: () => void;
 }
 
+const HEADERS: Record<PersonaType, { name: string; role: string; avatar: "otto" | "steve" }> = {
+  auto: { name: "Otto + Steve", role: "SRE · Software Engineer", avatar: "otto" },
+  otto: { name: "Outage Otto", role: "SRE Assistant", avatar: "otto" },
+  steve: { name: "Software Steve", role: "Software Engineer", avatar: "steve" },
+};
+
 export default function Sidebar({ onClose }: SidebarProps) {
   const {
     sessions,
     activeSessionId,
-    activeAgent,
+    activePersona,
     init,
     cleanup,
     createSession,
     switchSession,
     deleteSession,
     renameSession,
-    setActiveAgent,
+    setActivePersona,
   } = useChatStore();
   const navigate = useNavigate();
   const location = useLocation();
@@ -35,8 +41,8 @@ export default function Sidebar({ onClose }: SidebarProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleAgentChange = (agent: AgentType) => {
-    setActiveAgent(agent);
+  const handleAgentChange = (persona: PersonaType) => {
+    setActivePersona(persona);
   };
 
   const handleNewChat = async () => {
@@ -63,12 +69,12 @@ export default function Sidebar({ onClose }: SidebarProps) {
     <div className="flex flex-col h-full bg-dark-800 border-r border-dark-600">
       {/* Header */}
       <div className="flex items-center gap-3 p-4 border-b border-dark-600">
-        <AgentAvatar size="sm" still />
+        <AgentAvatar size="sm" still persona={HEADERS[activePersona].avatar} />
         <div className="flex-1 min-w-0">
           <h1 className="text-sm font-semibold text-gray-100 truncate">
-            Outage Otto
+            {HEADERS[activePersona].name}
           </h1>
-          <p className="text-xs text-gray-500">SRE Assistant</p>
+          <p className="text-xs text-gray-500">{HEADERS[activePersona].role}</p>
         </div>
         <button
           onClick={onClose}
@@ -80,9 +86,9 @@ export default function Sidebar({ onClose }: SidebarProps) {
         </button>
       </div>
 
-      {/* Agent Switch */}
+      {/* Persona Switch */}
       <div className="px-3 pt-3 pb-2">
-        <AgentSwitch value={activeAgent} onChange={handleAgentChange} />
+        <AgentSwitch value={activePersona} onChange={handleAgentChange} />
       </div>
 
       {/* New Chat */}

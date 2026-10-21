@@ -10,6 +10,15 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.agent.loop import run_agent_turn, ensure_session
 from app.agent.opencode import run_opencode
+from app.agent.personas import (
+    DEFAULT_PERSONA_ID,
+    get_persona,
+    persona_system_prompt,
+    resolve_engine,
+)
+from app.agent.router import resolve_persona, strip_mention
+from app.agent import session as session_mgr
+from app.agent.workspace import mount_active, mount_root
 from app.terminal.exec import execute_command, get_terminal_manager
 from app.models.schemas import ChatRequest
 
@@ -136,7 +145,7 @@ async def ws_chat(websocket: WebSocket):
 
             user_message = data.get("data", "")
             session_id = data.get("session_id")
-            agent = data.get("agent", "local")
+            persona_request = _normalize_persona_request(data)
 
             if not user_message:
                 await safe_send(
@@ -151,10 +160,7 @@ async def ws_chat(websocket: WebSocket):
             )
 
             try:
-                if agent == "opencode":
-                    await _stream_opencode(safe_send, user_message, session_id)
-                else:
-                    await _stream_local(safe_send, user_message, session_id)
+                await _handle_agent_message(safe_send, user_message, session_id, persona_request)
             except Exception as e:
                 logger.exception("Error during agent turn")
                 await safe_send(
@@ -167,8 +173,105 @@ async def ws_chat(websocket: WebSocket):
         await stop_terminal_streaming()
 
 
-async def _stream_local(send_json, user_message: str, session_id: str):
-    token_stream = await run_agent_turn(user_message, session_id, stream=True)
+def _normalize_persona_request(data: dict) -> str:
+    """Resolve the requested persona from the WS payload (new + legacy shapes)."""
+    persona = data.get("persona")
+    if persona is None:
+        # Legacy clients sent agent: "local" | "opencode".
+        legacy = str(data.get("agent") or "").strip().lower()
+        persona = {"opencode": "steve", "local": "otto"}.get(legacy)
+    if persona is None:
+        return "auto"
+    persona = str(persona).strip().lower()
+    if persona in ("auto", "otto", "steve"):
+        return persona
+    return "auto"
+
+
+async def _handle_agent_message(
+    send_json,
+    user_message: str,
+    session_id: str,
+    persona_request: str,
+) -> None:
+    session = await session_mgr.get_session(session_id)
+    active_persona = (session or {}).get("active_persona")
+
+    persona_id, reason = await resolve_persona(
+        requested=persona_request,
+        active_persona=active_persona,
+        message=user_message,
+    )
+    persona = get_persona(persona_id) or get_persona(DEFAULT_PERSONA_ID)
+    engine = await resolve_engine(persona.id)
+    await session_mgr.set_active_persona(session_id, persona.id)
+
+    await send_json(
+        {
+            "type": "persona",
+            "data": persona.id,
+            "name": persona.name,
+            "role": persona.role,
+            "avatar": persona.avatar,
+            "accent": persona.accent,
+            "engine": engine.id,
+            "engine_label": engine.label,
+            "reason": reason,
+            "session_id": session_id,
+        }
+    )
+
+    logger.info(
+        "Routing turn to persona=%s engine=%s reason=%s session=%s",
+        persona.id,
+        engine.id,
+        reason,
+        session_id,
+    )
+
+    processed = strip_mention(user_message) or user_message
+
+    if persona.id != "steve":
+        await _stream_local(send_json, processed, session_id, persona_id=persona.id, profile="local")
+        return
+
+    # Steve: dispatch to the resolved coding engine.
+    if engine.id == "opencode":
+        if engine.available:
+            await _stream_opencode(send_json, processed, session_id)
+            return
+        await send_json(
+            {
+                "type": "token",
+                "data": (
+                    "\n\n*OpenCode engine is unavailable "
+                    f"({engine.detail}); falling back to the local model.*\n\n"
+                ),
+                "session_id": session_id,
+            }
+        )
+        await _stream_local(send_json, processed, session_id, persona_id="steve", profile="local")
+        return
+
+    profile = "steve" if engine.id == "deepseek" else "local"
+    await _stream_local(send_json, processed, session_id, persona_id="steve", profile=profile)
+
+
+async def _stream_local(
+    send_json,
+    user_message: str,
+    session_id: str,
+    *,
+    persona_id: str = DEFAULT_PERSONA_ID,
+    profile: str = "local",
+):
+    token_stream = await run_agent_turn(
+        user_message,
+        session_id,
+        stream=True,
+        persona_id=persona_id,
+        profile=profile,
+    )
     async for token in token_stream:
         await send_json(
             {"type": "token", "data": token, "session_id": session_id}
@@ -178,10 +281,16 @@ async def _stream_local(send_json, user_message: str, session_id: str):
 
 async def _stream_opencode(send_json, user_message: str, session_id: str):
     if user_message.strip().lower() == "/help":
-        await _stream_local(send_json, user_message, session_id)
+        await _stream_local(send_json, user_message, session_id, persona_id="steve")
         return
 
-    async for chunk in run_opencode(user_message, session_id):
+    cwd = str(mount_root()) if mount_active() else None
+    async for chunk in run_opencode(
+        user_message,
+        session_id,
+        cwd=cwd,
+        system_prompt=persona_system_prompt("steve"),
+    ):
         await send_json(
             {"type": "token", "data": chunk, "session_id": session_id}
         )

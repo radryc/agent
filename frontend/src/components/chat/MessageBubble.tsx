@@ -1,13 +1,25 @@
 import { Copy, Check } from "lucide-react";
 import { useState } from "react";
-import AgentAvatar from "./AgentAvatar";
+import AgentAvatar, { type AvatarPersona } from "./AgentAvatar";
 import type { Message } from "../../types";
 
 interface MessageBubbleProps {
   message: Message;
   isStreaming?: boolean;
   streamContent?: string;
+  /** Override the persona that authored this message. */
+  persona?: AvatarPersona;
 }
+
+const PERSONA_NAMES: Record<AvatarPersona, string> = {
+  otto: "Outage Otto",
+  steve: "Software Steve",
+};
+
+const PERSONA_LABEL_STYLES: Record<AvatarPersona, string> = {
+  otto: "text-accent-blue",
+  steve: "text-accent-purple",
+};
 
 // Regex to match markdown image syntax: ![alt](url)
 const IMG_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
@@ -125,10 +137,12 @@ export default function MessageBubble({
   message,
   isStreaming = false,
   streamContent,
+  persona,
 }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === "user";
   const content = isStreaming ? streamContent || "" : message.content;
+  const activePersona: AvatarPersona = persona ?? message.persona ?? "otto";
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(content);
@@ -145,7 +159,7 @@ export default function MessageBubble({
       {/* Avatar */}
       {!isUser && (
         <div className="shrink-0 mt-1">
-          <AgentAvatar size="sm" isTyping={isStreaming} />
+          <AgentAvatar size="sm" isTyping={isStreaming} persona={activePersona} />
         </div>
       )}
 
@@ -157,6 +171,15 @@ export default function MessageBubble({
             : "bg-dark-700 border border-dark-600 text-gray-200"
         }`}
       >
+        {/* Persona attribution */}
+        {!isUser && (
+          <div
+            className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${PERSONA_LABEL_STYLES[activePersona]}`}
+          >
+            {PERSONA_NAMES[activePersona]}
+          </div>
+        )}
+
         {/* Content with image rendering */}
         <div className="text-sm leading-relaxed">
           {renderContent(content, isStreaming)}

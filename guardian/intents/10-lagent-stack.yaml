@@ -65,11 +65,20 @@ spec:
           AGENT_NAME: OutageOtto
           GUARDIAN_URL: http://host.docker.internal:8090
           DOCTOR_QUERY_URL: http://host.docker.internal:18080
+          # Steve (coding persona): "" = auto (OpenCode -> DeepSeek -> local)
+          STEVE_ENGINE: ""
+          STEVE_LLM_BASE_URL: https://api.deepseek.com
+          STEVE_LLM_MODEL: deepseek-chat
+          AUTO_SWITCH_ENABLED: "true"
+          AUTO_PUSH_ENABLED: "false"
+          # Writable MonoFS workspace (requires /dev/fuse + SYS_ADMIN on the docker pusher)
+          MONOFS_ROUTER: ""
+          MONOFS_MOUNT: /workspace
+          MONOFS_OVERLAY: /data/monofs-overlay
           OTEL_ENABLED: "true"
           OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:14317
           OTEL_EXPORTER_OTLP_INSECURE: "true"
           OTEL_METRIC_EXPORT_INTERVAL_MS: "15000"
-          OTEL_SERVICE_NAME: lagent-backend
         volumeMounts:
           - volume: lagent-data
             path: /data

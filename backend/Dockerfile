@@ -57,10 +57,12 @@ RUN uv pip install --system --no-cache --break-system-packages -r requirements.t
 COPY --from=monofs-client-stage /usr/local/bin/monofs-client /usr/local/bin/monofs-client
 COPY --from=monofs-client-stage /usr/local/bin/monofs-session /usr/local/bin/monofs-session
 COPY guardianctl /usr/local/bin/guardianctl
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 COPY app/ ./app/
 
-RUN mkdir -p /data
+RUN mkdir -p /data /workspace
 
 RUN mkdir -p /etc && \
     touch /etc/fuse.conf && \
@@ -71,10 +73,12 @@ RUN useradd -m -s /bin/bash developer && \
     usermod -aG sudo developer && \
     echo "developer ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/developer && \
     chmod 0440 /etc/sudoers.d/developer && \
-    chown -R developer:developer /app /data
+    chown -R developer:developer /app /data /workspace
 
 USER developer
 
 EXPOSE 8090
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]

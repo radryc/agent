@@ -5,33 +5,36 @@ import AgentAvatar from "./AgentAvatar";
 import { Sparkles } from "lucide-react";
 
 export default function ChatMessages() {
-  const { messages, isStreaming, streamContent } = useChatStore();
+  const { messages, isStreaming, streamContent, streamPersona, activePersona } = useChatStore();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamContent]);
 
+  const emptyAvatar = activePersona === "steve" ? "steve" : "otto";
+  const streamingName = streamPersona === "steve" ? "Software Steve" : "Outage Otto";
+
   // Empty state
   if (messages.length === 0 && !isStreaming) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-6 p-8">
-        <AgentAvatar size="lg" />
+        <AgentAvatar size="lg" persona={emptyAvatar} />
         <div className="text-center">
           <h2 className="text-xl font-semibold text-gray-200 mb-2">
-            Welcome to Outage Otto
+            Welcome to Otto &amp; Steve
           </h2>
           <p className="text-sm text-gray-500 max-w-md">
-            Sarcastic on the surface, ruthlessly helpful underneath. Your local
-            AI SRE powered by Gemma 4 — private, fast, and always on call.
+            Otto watches the infrastructure. Steve ships the code. Ask anything —
+            the right persona picks up based on context, or pin one from the sidebar.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 justify-center max-w-lg">
           {[
-            "Explain quantum computing simply",
-            "Write a Python fizzbuzz",
-            "What's the weather like on Mars?",
-            "Help me debug my code",
+            "Is everything up?",
+            "Fix the failing unit test",
+            "What's the API latency trend?",
+            "Refactor this function with tests",
           ].map((prompt) => (
             <button
               key={prompt}
@@ -65,6 +68,7 @@ export default function ChatMessages() {
           }}
           isStreaming
           streamContent={streamContent}
+          persona={streamPersona ?? undefined}
         />
       )}
 
@@ -76,6 +80,9 @@ export default function ChatMessages() {
             <span className="typing-dot w-1.5 h-1.5 rounded-full bg-gray-500" />
             <span className="typing-dot w-1.5 h-1.5 rounded-full bg-gray-500" />
           </div>
+          {streamPersona && (
+            <span className="text-xs text-gray-500">{streamingName} is on it…</span>
+          )}
         </div>
       )}
 

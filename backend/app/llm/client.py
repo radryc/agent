@@ -10,32 +10,55 @@ from app.config import settings, get_runtime
 
 logger = logging.getLogger(__name__)
 
-_client: httpx.AsyncClient | None = None
+_clients: dict[tuple[str, str], httpx.AsyncClient] = {}
 
 
-def _auth_headers() -> dict[str, str]:
-    key = str(get_runtime("llm_api_key") or "").strip()
+def _profile_config(profile: str) -> dict:
+    """Resolve base_url/api_key/model for an LLM profile.
+
+    "local" -> the llama.cpp / Gemma OpenAI-compatible server (LLM_*).
+    "steve" -> the external coding engine profile (STEVE_LLM_*), e.g. DeepSeek.
+    """
+    if profile == "steve":
+        return {
+            "base_url": str(get_runtime("steve_llm_base_url") or "https://api.deepseek.com").strip()
+            or "https://api.deepseek.com",
+            "api_key": str(get_runtime("steve_llm_api_key") or "").strip(),
+            "model": str(get_runtime("steve_llm_model") or "deepseek-chat").strip() or "deepseek-chat",
+        }
+    return {
+        "base_url": str(get_runtime("llm_base_url") or settings.llm_base_url).strip(),
+        "api_key": str(get_runtime("llm_api_key") or "").strip(),
+        "model": str(get_runtime("llm_model") or "gemma-4-E4B-it"),
+    }
+
+
+def _auth_headers(profile: str) -> dict[str, str]:
+    key = _profile_config(profile)["api_key"]
     if not key:
         return {}
     return {"Authorization": f"Bearer {key}"}
 
 
-def _get_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(
-            base_url=settings.llm_base_url,
-            headers=_auth_headers(),
+def _get_client(profile: str = "local") -> httpx.AsyncClient:
+    config = _profile_config(profile)
+    cache_key = (config["base_url"], config["api_key"])
+    client = _clients.get(cache_key)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
+            base_url=config["base_url"],
+            headers=_auth_headers(profile),
             timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
         )
-    return _client
+        _clients[cache_key] = client
+    return client
 
 
 async def close_client() -> None:
-    global _client
-    if _client and not _client.is_closed:
-        await _client.aclose()
-        _client = None
+    for client in list(_clients.values()):
+        if client and not client.is_closed:
+            await client.aclose()
+    _clients.clear()
 
 
 async def chat_completion(
@@ -44,15 +67,17 @@ async def chat_completion(
     temperature: float = 0.7,
     max_tokens: int = 2048,
     stream: bool = True,
+    profile: str = "local",
 ) -> AsyncIterator[str] | str:
+    config = _profile_config(profile)
     payload = {
-        "model": get_runtime("llm_model") or "gemma-4-E4B-it",
+        "model": config["model"],
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": stream,
     }
-    client = _get_client()
+    client = _get_client(profile)
 
     if not stream:
         resp = await client.post("/v1/chat/completions", json=payload)
