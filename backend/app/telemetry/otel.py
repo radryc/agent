@@ -32,7 +32,12 @@ def init_telemetry() -> None:
         )
         from opentelemetry.sdk.resources import Resource
 
-        resource = Resource.create({"service.name": settings.otel_service_name})
+        resource = Resource.create(
+            {
+                "service.name": settings.otel_service_name,
+                "guardian.component": "lagent-backend",
+            }
+        )
 
         tracer_provider = TracerProvider(resource=resource)
         trace_exporter = OTLPSpanExporter(
