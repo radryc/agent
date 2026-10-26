@@ -77,19 +77,8 @@ export default function SettingsPage() {
     };
   }, [deviceLogin]);
 
-  async function startSso() {
-    setAuthBusy(true);
-    setAuthError("");
-    try {
-      const start = await api.startDeviceLogin();
-      setDeviceLogin(start);
-      const url = start.verification_uri_complete || start.verification_uri;
-      if (url) window.open(url, "_blank", "noopener,noreferrer");
-    } catch (e) {
-      setAuthError(e instanceof Error ? e.message : "Could not start SSO login.");
-    } finally {
-      setAuthBusy(false);
-    }
+  function startSso() {
+    window.location.href = `/api/auth/login?next=${encodeURIComponent("/settings")}`;
   }
 
   async function signOutSso() {
@@ -97,11 +86,10 @@ export default function SettingsPage() {
     setAuthError("");
     try {
       await api.logoutSso();
-      setAuthStatus(await api.authStatus());
-      setDeviceLogin(null);
+      sessionStorage.removeItem("lagent_skip_sso");
+      window.location.href = "/";
     } catch {
       setAuthError("Could not sign out.");
-    } finally {
       setAuthBusy(false);
     }
   }
@@ -601,18 +589,24 @@ export default function SettingsPage() {
             </h2>
             <span
               className={`text-xs font-medium ${
-                authStatus?.authenticated ? "text-green-400" : "text-amber-400"
+                authStatus?.authenticated_as_user || authStatus?.source === "device"
+                  ? "text-green-400"
+                  : "text-amber-400"
               }`}
             >
               {authStatus?.authenticated
-                ? `signed in${authStatus.source ? ` · ${authStatus.source}` : ""}`
+                ? authStatus.authenticated_as_user || authStatus.source === "device"
+                  ? `signed in · ${authStatus.subject || "SSO user"}`
+                  : `machine identity${authStatus.source ? ` · ${authStatus.source}` : ""}`
                 : "not signed in"}
             </span>
           </div>
 
           <p className="text-xs text-gray-600">
             Used by Doctor log/trace queries, Guardian API calls, and MonoFS tools.
-            Client credentials are used automatically; device flow is for interactive SSO.
+            Client credentials are the machine identity and are always available.
+            Sign in with SSO to use a per-user identity so Doctor returns the logs,
+            traces, and partitions that <em>you</em> are allowed to see.
           </p>
 
           {authStatus?.authenticated && (
@@ -664,6 +658,44 @@ export default function SettingsPage() {
                 onChange={(e) => update("agent_oidc_device_authorization_url", e.target.value)}
                 className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
               />
+            </div>
+            <div className="space-y-2 col-span-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Authorization URL</label>
+              <input
+                type="text"
+                placeholder="http://localhost:9020/application/o/authorize/"
+                value={settings?.agent_oidc_authorization_url ?? ""}
+                onChange={(e) => update("agent_oidc_authorization_url", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2 col-span-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Redirect URL</label>
+              <input
+                type="text"
+                placeholder="http://localhost:9191/api/auth/callback"
+                value={settings?.agent_oidc_redirect_url ?? ""}
+                onChange={(e) => update("agent_oidc_redirect_url", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+            <div className="space-y-2 col-span-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">
+                Browser-visible IdP base URL
+                <span className="ml-1 normal-case text-gray-600">(used to rewrite the device verification link)</span>
+              </label>
+              <input
+                type="text"
+                placeholder="http://localhost:9020"
+                value={settings?.agent_oidc_public_base_url ?? ""}
+                onChange={(e) => update("agent_oidc_public_base_url", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-emerald-400"
+              />
+              <p className="text-xs text-gray-600">
+                The backend calls Authentik over its in-cluster service. Set this to the
+                URL your browser can open (for local kind, usually
+                <code className="ml-1 text-emerald-300">http://localhost:9020</code>).
+              </p>
             </div>
             <div className="space-y-2">
               <label className="block text-xs text-gray-500 uppercase tracking-wide">Client ID</label>

@@ -3,6 +3,9 @@ import { useParams } from "react-router-dom";
 import { useChatStore } from "../stores/chatStore";
 import type { Mode } from "../types";
 import Terminal, { type TerminalHandle } from "../components/terminal/Terminal";
+import ChatMessages from "../components/chat/ChatMessages";
+import ChatInput from "../components/chat/ChatInput";
+import SsoStatusButton from "../components/layout/SsoStatusButton";
 
 const AGENT_PROMPTS: Record<string, string> = {
   local: "$ ",
@@ -23,8 +26,6 @@ export default function ChatPage() {
     sendMessage,
     renameSession,
     isStreaming,
-    streamContent,
-    messages,
     mode,
     cwd,
     execOutput,
@@ -61,53 +62,34 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Replay history into terminal when switching sessions
-  useEffect(() => {
-    if (mode === "terminal") return;
-    const term = terminalRef.current;
-    if (!term) return;
-    term.clear();
-    term.printWelcome();
-    for (const msg of messages) {
-      if (msg.role === "user") {
-        term.writeln(msg.content);
-      } else {
-        term.writeln("");
-        term.write(msg.content);
-        term.write("\r\n");
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId, mode]);
-
-  // Write streaming tokens to terminal
+  // In agent mode the conversation is rendered as chat bubbles. The terminal
+  // is only mounted in terminal mode, where it streams shell output directly.
   const prevLenRef = useRef(0);
   useEffect(() => {
     const term = terminalRef.current;
-    if (!term) {
+    if (!term || mode !== "terminal") {
       prevLenRef.current = 0;
       return;
     }
-
-    if (mode !== "terminal" && !isStreaming) {
-      prevLenRef.current = 0;
-      return;
-    }
-
-    const src = mode === "terminal" ? execOutput : streamContent;
-    const delta = src.slice(prevLenRef.current);
+    const delta = execOutput.slice(prevLenRef.current);
     if (delta) {
       term.write(delta);
-      prevLenRef.current = src.length;
+      prevLenRef.current = execOutput.length;
     }
-  }, [streamContent, execOutput, isStreaming, mode]);
+  }, [execOutput, mode]);
 
-  // When streaming starts in agent mode, add spacing
+  // Ctrl+E toggles mode. In terminal mode xterm handles the shortcut itself.
   useEffect(() => {
-    if (isStreaming && mode !== "terminal") {
-      terminalRef.current?.writeln("");
-    }
-  }, [isStreaming, mode]);
+    if (mode !== "agent") return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        setMode("terminal");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode, setMode]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -234,26 +216,35 @@ export default function ChatPage() {
             </span>
           </>
         )}
+        <div className="ml-auto pl-2">
+          <SsoStatusButton />
+        </div>
       </div>
 
-      {/* Terminal */}
-      <div className="flex-1 min-h-0">
-        <Terminal
-          ref={terminalRef}
-          onSend={handleSend}
-          onTerminalStart={handleTerminalStart}
-          onTerminalInput={handleTerminalInput}
-          onTerminalResize={handleTerminalResize}
-          onTerminalSignal={handleTerminalSignal}
-          onTerminalHistory={handleTerminalHistory}
-          onCancel={handleCancel}
-          streaming={isStreaming}
-          prompt={prompt}
-          mode={mode}
-          cwd={cwd}
-          onSetMode={handleSetMode}
-        />
-      </div>
+      {mode === "agent" ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <ChatMessages />
+          <ChatInput />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1">
+          <Terminal
+            ref={terminalRef}
+            onSend={handleSend}
+            onTerminalStart={handleTerminalStart}
+            onTerminalInput={handleTerminalInput}
+            onTerminalResize={handleTerminalResize}
+            onTerminalSignal={handleTerminalSignal}
+            onTerminalHistory={handleTerminalHistory}
+            onCancel={handleCancel}
+            streaming={isStreaming}
+            prompt={prompt}
+            mode={mode}
+            cwd={cwd}
+            onSetMode={handleSetMode}
+          />
+        </div>
+      )}
     </div>
   );
 }

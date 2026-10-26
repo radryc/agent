@@ -64,7 +64,7 @@ export default function ChatInput() {
       </div>
 
       <p className="text-center text-[10px] text-gray-600 mt-2">
-        OutageOtto runs locally via llama.cpp — your data never leaves your machine
+        Enter to send · Shift+Enter for a new line · Ctrl+E opens the shell
       </p>
     </div>
   );

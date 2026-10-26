@@ -31,7 +31,9 @@ export interface AgentSettings {
   // SSO / OIDC
   agent_oidc_issuer: string;
   agent_oidc_token_url: string;
+  agent_oidc_authorization_url: string;
   agent_oidc_device_authorization_url: string;
+  agent_oidc_redirect_url: string;
   agent_oidc_client_id: string;
   agent_oidc_client_secret: string;
   agent_oidc_client_secret_set?: boolean;
@@ -41,19 +43,23 @@ export interface AgentSettings {
   agent_oidc_token: string;
   agent_oidc_token_set?: boolean;
   agent_oidc_token_masked?: string;
+  agent_oidc_public_base_url: string;
   workspace?: WorkspaceStatus;
 }
 
 export interface AuthStatus {
   configured: boolean;
   authenticated: boolean;
+  authenticated_as_user?: boolean;
   source: string;
   subject: string;
   expires_at: number | null;
   error: string;
   device_flow_available: boolean;
+  browser_login_available?: boolean;
   token_url: string;
   issuer: string;
+  public_base_url?: string;
 }
 
 export interface DeviceLoginStart {

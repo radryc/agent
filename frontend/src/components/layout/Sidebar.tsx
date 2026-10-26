@@ -98,7 +98,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
           className="flex items-center gap-2 w-full rounded-lg border border-dark-500 px-3 py-2.5 text-sm hover:bg-dark-700 transition-colors text-gray-300"
         >
           <Plus size={16} />
-          New Terminal Session
+          New Chat
         </button>
       </div>
 

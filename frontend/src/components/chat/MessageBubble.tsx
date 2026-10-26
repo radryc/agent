@@ -1,5 +1,7 @@
 import { Copy, Check } from "lucide-react";
 import { useState } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import AgentAvatar, { type AvatarPersona } from "./AgentAvatar";
 import type { Message } from "../../types";
 
@@ -16,122 +18,51 @@ const PERSONA_NAMES: Record<AvatarPersona, string> = {
   steve: "Software Steve",
 };
 
-const PERSONA_LABEL_STYLES: Record<AvatarPersona, string> = {
-  otto: "text-accent-blue",
-  steve: "text-accent-purple",
+const PERSONA_BADGES: Record<AvatarPersona, string> = {
+  otto: "border-blue-500/40 bg-blue-500/15 text-blue-300",
+  steve: "border-purple-500/40 bg-purple-500/15 text-purple-300",
 };
-
-// Regex to match markdown image syntax: ![alt](url)
-const IMG_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
-const LINK_RE = /(?<!!)\[([^\]]+)\]\(([^)]+)\)/g;
 
 const VIDEO_RE = /\.(mp4|webm|mov|mkv|avi|m4v)(\?|$)/i;
 const AUDIO_RE = /\.(mp3|wav|flac|ogg|m4a|aac)(\?|$)/i;
 
-function renderContent(text: string, isStreaming: boolean) {
-  const parts: React.ReactNode[] = [];
-  let last = 0;
-  let match: RegExpExecArray | null;
-  IMG_RE.lastIndex = 0;
-
-  while ((match = IMG_RE.exec(text)) !== null) {
-    if (match.index > last) {
-      parts.push(
-        <span key={last} className="whitespace-pre-wrap break-words">
-          {text.slice(last, match.index)}
-        </span>
+const markdownComponents: Components = {
+  a: ({ href, children }) => {
+    const url = href ?? "";
+    if (VIDEO_RE.test(url)) {
+      return (
+        <video
+          src={url}
+          controls
+          className="my-2 max-w-full rounded-lg border border-dark-600"
+        />
       );
     }
-    parts.push(
-      <img
-        key={match.index}
-        src={match[2]}
-        alt={match[1] || "generated image"}
-        className="mt-2 mb-1 max-w-full rounded-lg border border-dark-600 cursor-pointer hover:opacity-90 transition-opacity"
-        onClick={() => window.open(match![2], "_blank")}
-      />
-    );
-    last = match.index + match[0].length;
-  }
-
-  if (last < text.length) {
-    const remainder = text.slice(last);
-    let linkLast = 0;
-    LINK_RE.lastIndex = 0;
-
-    while ((match = LINK_RE.exec(remainder)) !== null) {
-      if (match.index > linkLast) {
-        parts.push(
-          <span key={`t-${last + linkLast}`} className="whitespace-pre-wrap break-words">
-            {remainder.slice(linkLast, match.index)}
-          </span>
-        );
-      }
-
-      const label = match[1] || "generated media";
-      const url = match[2];
-
-      if (VIDEO_RE.test(url)) {
-        parts.push(
-          <video
-            key={`v-${last + match.index}`}
-            src={url}
-            controls
-            className="mt-2 mb-1 max-w-full rounded-lg border border-dark-600"
-          />
-        );
-      } else if (AUDIO_RE.test(url)) {
-        parts.push(
-          <audio
-            key={`a-${last + match.index}`}
-            src={url}
-            controls
-            className="mt-2 mb-1 w-full"
-          />
-        );
-      } else {
-        parts.push(
-          <a
-            key={`l-${last + match.index}`}
-            href={url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-accent-blue underline break-all"
-          >
-            {label}
-          </a>
-        );
-      }
-
-      linkLast = match.index + match[0].length;
+    if (AUDIO_RE.test(url)) {
+      return <audio src={url} controls className="my-2 w-full" />;
     }
-
-    if (linkLast < remainder.length) {
-      parts.push(
-        <span key={`t-end-${last + linkLast}`} className="whitespace-pre-wrap break-words">
-          {remainder.slice(linkLast)}
-        </span>
-      );
-    }
-  }
-
-  if (parts.length === 0 && text.length > 0) {
-    parts.push(
-      <span key={last} className="whitespace-pre-wrap break-words">
-        {text}
-      </span>
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className="text-accent-blue underline break-all hover:text-blue-300"
+      >
+        {children}
+      </a>
     );
-  }
-
-  return (
-    <>
-      {parts}
-      {isStreaming && (
-        <span className="inline-block w-2 h-4 ml-0.5 bg-accent-blue animate-blink align-middle" />
-      )}
-    </>
-  );
-}
+  },
+  img: ({ src, alt }) => (
+    <img
+      src={typeof src === "string" ? src : ""}
+      alt={alt || "generated image"}
+      className="my-2 max-w-full cursor-pointer rounded-lg border border-dark-600 transition-opacity hover:opacity-90"
+      onClick={() => {
+        if (typeof src === "string") window.open(src, "_blank");
+      }}
+    />
+  ),
+};
 
 export default function MessageBubble({
   message,
@@ -150,55 +81,88 @@ export default function MessageBubble({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  return (
-    <div
-      className={`flex gap-3 animate-fade-in ${
-        isUser ? "flex-row-reverse" : "flex-row"
-      }`}
-    >
-      {/* Avatar */}
-      {!isUser && (
-        <div className="shrink-0 mt-1">
-          <AgentAvatar size="sm" isTyping={isStreaming} persona={activePersona} />
+  if (isUser) {
+    return (
+      <div className="flex animate-fade-in flex-row-reverse items-start gap-3">
+        <div className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-full border border-blue-400/40 bg-blue-500/20 text-[11px] font-semibold text-blue-200 sm:flex">
+          You
         </div>
-      )}
-
-      {/* Bubble */}
-      <div
-        className={`group relative max-w-[75%] rounded-2xl px-4 py-3 ${
-          isUser
-            ? "bg-accent-blue/20 border border-accent-blue/30 text-gray-100"
-            : "bg-dark-700 border border-dark-600 text-gray-200"
-        }`}
-      >
-        {/* Persona attribution */}
-        {!isUser && (
-          <div
-            className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${PERSONA_LABEL_STYLES[activePersona]}`}
-          >
-            {PERSONA_NAMES[activePersona]}
+        <div className="group relative max-w-[85%] rounded-2xl rounded-tr-sm border border-blue-400/40 bg-blue-600/25 px-4 py-3 text-gray-50 shadow-[0_8px_30px_rgba(37,99,235,0.12)] sm:max-w-[75%]">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-blue-300">
+            You
           </div>
-        )}
+          <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+            {content}
+          </div>
+          {content && (
+            <button
+              onClick={handleCopy}
+              className="absolute -bottom-2 right-2 rounded-md bg-dark-600 p-1 opacity-0 transition-opacity hover:bg-dark-500 group-hover:opacity-100"
+              title="Copy"
+            >
+              {copied ? (
+                <Check size={12} className="text-green-400" />
+              ) : (
+                <Copy size={12} />
+              )}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
-        {/* Content with image rendering */}
-        <div className="text-sm leading-relaxed">
-          {renderContent(content, isStreaming)}
+  return (
+    <div className="flex animate-fade-in flex-row items-start gap-3">
+      <div className="mt-1 shrink-0">
+        <AgentAvatar size="sm" isTyping={isStreaming} persona={activePersona} />
+      </div>
+
+      <div className="group relative max-w-[88%] overflow-hidden rounded-2xl rounded-tl-sm border border-dark-500 bg-dark-800/95 shadow-[0_8px_30px_rgba(0,0,0,0.25)] sm:max-w-[80%]">
+        <div className="flex items-center gap-2 border-b border-dark-600/80 bg-dark-700/60 px-4 py-2">
+          <span className="text-xs font-semibold text-gray-200">
+            {PERSONA_NAMES[activePersona]}
+          </span>
+          <span
+            className={`rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${PERSONA_BADGES[activePersona]}`}
+          >
+            Agent
+          </span>
+          {isStreaming && (
+            <span className="ml-auto flex items-center gap-1.5 text-[10px] text-accent-cyan">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-cyan" />
+              Streaming
+            </span>
+          )}
         </div>
 
-        {/* Copy button */}
+        <div className="px-4 py-3">
+          <div className="md-content text-sm leading-relaxed text-gray-200">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {content}
+            </ReactMarkdown>
+            {isStreaming && (
+              <span className="ml-0.5 inline-block h-4 w-2 animate-blink bg-accent-cyan align-middle" />
+            )}
+          </div>
+        </div>
+
         {!isStreaming && content && (
           <button
             onClick={handleCopy}
-            className="absolute -bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity rounded-md bg-dark-600 p-1 hover:bg-dark-500"
+            className="absolute right-2 top-2 rounded-md bg-dark-600/80 p-1.5 opacity-0 transition-opacity hover:bg-dark-500 group-hover:opacity-100"
             title="Copy"
           >
-            {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+            {copied ? (
+              <Check size={12} className="text-green-400" />
+            ) : (
+              <Copy size={12} />
+            )}
           </button>
         )}
 
-        {/* Timestamp */}
         {!isStreaming && message.created_at && (
-          <div className="absolute -bottom-5 right-0 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-gray-600">
+          <div className="px-4 pb-2 text-right text-[10px] text-gray-600">
             {new Date(message.created_at).toLocaleTimeString()}
           </div>
         )}
@@ -206,4 +170,3 @@ export default function MessageBubble({
     </div>
   );
 }
-

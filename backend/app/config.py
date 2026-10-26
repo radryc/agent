@@ -71,11 +71,18 @@ class Settings(BaseSettings):
     agent_oidc_issuer: str = ""
     agent_oidc_token_url: str = ""
     agent_oidc_device_authorization_url: str = ""
+    # Browser-facing OIDC endpoints. If empty, derived from the public base.
+    agent_oidc_authorization_url: str = ""
+    agent_oidc_redirect_url: str = ""
     agent_oidc_client_id: str = ""
     agent_oidc_client_secret: str = ""
     agent_oidc_audience: str = ""
-    agent_oidc_scope: str = "openid"
+    agent_oidc_scope: str = "openid email profile offline_access"
     agent_oidc_token: str = ""
+    # Browser-visible Authentik/IdP base URL. The backend talks to the
+    # in-cluster issuer, but the device-flow verification page must be opened
+    # by the user's browser (e.g. http://localhost:9020).
+    agent_oidc_public_base_url: str = ""
 
     # OpenCode agent
     opencode_api_key: str = ""
@@ -118,11 +125,14 @@ def get_all_runtime_settings() -> dict:
         "agent_oidc_issuer": settings.agent_oidc_issuer,
         "agent_oidc_token_url": settings.agent_oidc_token_url,
         "agent_oidc_device_authorization_url": settings.agent_oidc_device_authorization_url,
+        "agent_oidc_authorization_url": settings.agent_oidc_authorization_url,
+        "agent_oidc_redirect_url": settings.agent_oidc_redirect_url,
         "agent_oidc_client_id": settings.agent_oidc_client_id,
         "agent_oidc_client_secret": settings.agent_oidc_client_secret,
         "agent_oidc_audience": settings.agent_oidc_audience,
         "agent_oidc_scope": settings.agent_oidc_scope,
         "agent_oidc_token": settings.agent_oidc_token,
+        "agent_oidc_public_base_url": settings.agent_oidc_public_base_url,
         "opencode_api_key": settings.opencode_api_key,
         "opencode_server_url": settings.opencode_server_url,
         "opencode_model": settings.opencode_model,

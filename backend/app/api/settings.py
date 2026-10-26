@@ -20,11 +20,14 @@ class SettingsPayload(BaseModel):
     agent_oidc_issuer: str | None = None
     agent_oidc_token_url: str | None = None
     agent_oidc_device_authorization_url: str | None = None
+    agent_oidc_authorization_url: str | None = None
+    agent_oidc_redirect_url: str | None = None
     agent_oidc_client_id: str | None = None
     agent_oidc_client_secret: str | None = None
     agent_oidc_audience: str | None = None
     agent_oidc_scope: str | None = None
     agent_oidc_token: str | None = None
+    agent_oidc_public_base_url: str | None = None
     opencode_api_key: str | None = None
     opencode_server_url: str | None = None
     opencode_model: str | None = None

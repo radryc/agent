@@ -3,13 +3,14 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 import app.config as config  # noqa: E402
 from app.agent import tools as agent_tools  # noqa: E402
-from app.auth.oidc import oidc  # noqa: E402
+from app.auth.oidc import OIDCError, oidc  # noqa: E402
 
 
 class FakeResponse:
@@ -40,6 +41,9 @@ class OIDCProviderTest(unittest.IsolatedAsyncioTestCase):
         "agent_oidc_audience",
         "agent_oidc_scope",
         "agent_oidc_token",
+        "agent_oidc_public_base_url",
+        "agent_oidc_authorization_url",
+        "agent_oidc_redirect_url",
     )
 
     def setUp(self):
@@ -125,6 +129,93 @@ class OIDCProviderTest(unittest.IsolatedAsyncioTestCase):
         status = await oidc.status()
         self.assertTrue(status["authenticated"])
         self.assertEqual(status["source"], "device")
+
+    async def test_device_flow_rewrites_verification_url_for_browser(self):
+        self._set(
+            agent_oidc_token_url="http://idp/token",
+            agent_oidc_device_authorization_url="http://idp/device",
+            agent_oidc_client_id="agent",
+            agent_oidc_public_base_url="http://localhost:9020",
+        )
+        client = fake_client(
+            FakeResponse(
+                payload={
+                    "device_code": "device-code",
+                    "user_code": "123456",
+                    "verification_uri": "http://authentik.authentik.svc.cluster.local:9000/device",
+                    "verification_uri_complete": (
+                        "http://authentik.authentik.svc.cluster.local:9000/device?code=123456"
+                    ),
+                    "expires_in": 60,
+                    "interval": 5,
+                }
+            )
+        )
+        with patch("app.auth.oidc.httpx.AsyncClient", return_value=client):
+            started = await oidc.start_device_flow()
+
+        self.assertEqual(started["verification_uri"], "http://localhost:9020/device")
+        self.assertEqual(
+            started["verification_uri_complete"],
+            "http://localhost:9020/device?code=123456",
+        )
+
+    async def test_browser_login_builds_pkce_authorize_url(self):
+        self._set(
+            agent_oidc_authorization_url="http://idp/authorize",
+            agent_oidc_token_url="http://idp/token",
+            agent_oidc_client_id="agent",
+            agent_oidc_scope="openid email profile",
+        )
+        url = await oidc.begin_login("http://localhost:9191/api/auth/callback", "/chat")
+        parsed = urlsplit(url)
+        query = parse_qs(parsed.query)
+
+        self.assertEqual(parsed.scheme + "://" + parsed.netloc + parsed.path, "http://idp/authorize")
+        self.assertEqual(query["response_type"], ["code"])
+        self.assertEqual(query["client_id"], ["agent"])
+        self.assertEqual(query["redirect_uri"], ["http://localhost:9191/api/auth/callback"])
+        self.assertEqual(query["code_challenge_method"], ["S256"])
+        self.assertTrue(query["code_challenge"][0])
+        self.assertTrue(query["state"][0])
+
+    async def test_browser_login_stores_user_token(self):
+        self._set(
+            agent_oidc_authorization_url="http://idp/authorize",
+            agent_oidc_token_url="http://idp/token",
+            agent_oidc_client_id="agent",
+            agent_oidc_client_secret="secret",
+            agent_oidc_scope="openid email profile",
+        )
+        url = await oidc.begin_login("http://localhost:9191/api/auth/callback", "/chat")
+        state = parse_qs(urlsplit(url).query)["state"][0]
+        client = fake_client(
+            FakeResponse(
+                payload={
+                    "access_token": "user-token",
+                    "expires_in": 3600,
+                    "refresh_token": "refresh-token",
+                }
+            )
+        )
+        with patch("app.auth.oidc.httpx.AsyncClient", return_value=client):
+            result = await oidc.complete_login("auth-code", state)
+
+        self.assertEqual(result["status"], "authorized")
+        self.assertEqual(await oidc.get_token(), "user-token")
+        status = await oidc.status()
+        self.assertTrue(status["authenticated_as_user"])
+        self.assertEqual(status["source"], "login")
+
+    async def test_browser_login_rejects_state_mismatch(self):
+        self._set(
+            agent_oidc_authorization_url="http://idp/authorize",
+            agent_oidc_token_url="http://idp/token",
+            agent_oidc_client_id="agent",
+        )
+        await oidc.begin_login("http://localhost:9191/api/auth/callback")
+        with self.assertRaises(OIDCError):
+            await oidc.complete_login("auth-code", "wrong-state")
 
     async def test_device_flow_pending_does_not_store_token(self):
         self._set(

@@ -20,6 +20,56 @@ logger = logging.getLogger(__name__)
 # Matches a bare JSON tool-call line: {"tool": "...", "args": {...}}
 _TOOL_RE = re.compile(r'^\s*\{"tool"\s*:\s*".+?".*\}\s*$', re.MULTILINE)
 
+# Infrastructure/telemetry requests must be answered from a tool result. The
+# model is allowed to be terse, but it is not allowed to invent live state.
+_TELEMETRY_TERMS = re.compile(
+    r"\b("
+    r"logs?|traces?|spans?|metrics?|telemetry|errors?|latency|p9[59]|"
+    r"cpu|memory|partitions?|intents?|assets?|guardian|doctor|monofs|"
+    r"health(?:y)?|status|deploy(?:ment)?|reconcile|drift(?:ed)?|incident|"
+    r"failing|degraded|broken|"
+    r"outage|slo|5xx|4xx|auth|sso|oidc"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_METRIC_VALUE_TERMS = re.compile(
+    r"\b(?:cpu|memory|usage|utilization|latency|load|rate|p9[59]|error rate|"
+    r"request rate|throughput|metric value|how much|how many)\b",
+    re.IGNORECASE,
+)
+_PARTITION_HINT_RE = re.compile(
+    r"\b(agent|doctor|monofs|monitoring|opentelemetry|k8s-top|lb-agent|lb-edge|guardian-configs)\b",
+    re.IGNORECASE,
+)
+_METRIC_VALUE_INTENT = re.compile(
+    r"\b(?:show|give|what(?:'s| is)|current|value|values|how much|how many|"
+    r"measure|query|check)\b",
+    re.IGNORECASE,
+)
+
+_TOOL_USE_NUDGE = (
+    "You did not call a tool. This request is about live infrastructure or "
+    "telemetry, so you must call at least one relevant tool before answering. "
+    'Emit one JSON tool call per line, for example:\n'
+    '{"tool": "doctor_logs_search", "args": {"partition": "monofs", "limit": 20}}\n'
+    "Do not answer from memory or from the previous turn's context."
+)
+
+_METRIC_QUERY_NUDGE = (
+    "You listed metric names but did not query a value. The user asked for a "
+    "metric value. Run doctor_metrics_query now with a real selector (use "
+    "doctor_metrics_labels first if you need the exact label names). Do not "
+    "answer the value question with a catalog listing."
+)
+
+_EVIDENCE_REMINDER = (
+    "Answer only from the tool results above. If a result is empty, denied, or "
+    "returned an error, say that explicitly. Never invent counts, service names, "
+    "timestamps, latencies, log lines, trace IDs, or query results. The persona "
+    "controls tone only; it must not add facts that are not in the results."
+)
+
 # DeepSeek (notably in streaming mode) sometimes emits its native DSML
 # tool-call markup instead of the JSON line we ask for:
 #   <｜｜DSML｜｜ calls>
@@ -97,16 +147,40 @@ _HELP_TEXT = (
     "  Validate local partition/intent/asset bundles before proposing a release.\n\n"
     "--- DOCTOR (logs / traces / metrics) ---\n"
     "doctor_logs_services(partition: str?)\n"
-    "  Which services have log data. Quick existence check.\n\n"
-    "doctor_logs_search(partition: str?, service: str?, query: str?, from: str?, to: str?, limit: int=20)\n"
-    "  Full-text log search. Tip: pass the Compute asset name as service.\n\n"
+    "  Native log inventory: services/partitions. log_groups is AWS-only.\n\n"
+    "doctor_logs_search(partition: str?, service: str?, component: str?, asset: str?,\n"
+    "                   query: str?, from: str?, to: str?, limit: int=20)\n"
+    "  Log search. Use component=guardian component (monofs-router) or asset=guardian\n"
+    "  asset (router-a) for short names; the tool over-fetches and filters locally.\n"
+    "  Omit query to list recent logs.\n\n"
+    "doctor_metrics_names(search: str?, limit: int=200)\n"
+    "  Discover metric names before guessing a PromQL selector.\n\n"
+    "doctor_metrics_labels(match: str?)\n"
+    "  Discover label names for a metric/series.\n\n"
     "doctor_metrics_query(promql: str, start: str?, end: str?, step: str=15s)\n"
     "  PromQL: 'rate(http_requests_total[5m])', 'container_memory_usage_bytes',\n"
     "  'up'. Use start/end for range; omit for instant value.\n\n"
-    "doctor_traces_recent(partition: str?, service: str?, from: str?, to: str?, limit: int=20)\n"
-    "  Trace summaries: trace_id, root span, duration. Find slow paths.\n\n"
+    "doctor_traces_recent(partition: str?, service: str?, from: str?, to: str?, limit: int=20,\n"
+    "                       include_span_status: bool=true, errors_only: bool=false)\n"
+    "  Trace summaries plus span status/error enrichment. Error traces are\n"
+    "  sorted first and summarized in error_summary. Find slow or failing paths.\n\n"
+    "doctor_logql_schema()\n"
+    "  Real Loki stream labels + values (level, guardian_partition, ...).\n"
+    "  Call this before writing a selector; level is a label, not body text.\n\n"
+    "doctor_logql_label_values(label: str)\n"
+    "  Values for one Loki label (e.g. level -> error/info/warn).\n\n"
+    "doctor_logql_query(query: str, start: str?, end: str?, limit: int=100, direction: str=backward)\n"
+    "  Native Loki LogQL against /loki/api/v1/query_range. Use for label\n"
+    "  matchers, line filters, parsers, and metric queries.\n"
+    "  Example: {guardian_partition=\"monofs\", level=\"warn\"}\n\n"
     "doctor_trace_detail(trace_id: str)\n"
     "  Every span in a trace: timings, status codes, attributes.\n\n"
+    "doctor_traceql_query(query: str?, start: str?, end: str?, limit: int=20, spans_per_trace: int=0)\n"
+    "  Native Tempo TraceQL search against /api/search.\n"
+    "doctor_traceql_tags(start: str?, end: str?)\n"
+    "  Discover TraceQL tag names.\n"
+    "doctor_traceql_metrics(query: str, start: str?, end: str?, step: str?)\n"
+    "  Tempo TraceQL metrics against /api/metrics/query_range.\n\n"
     "doctor_guardian_events(partition: str?, limit: int=20)\n"
     "  Deployment timeline: reconcile cycles, task completions, failures.\n\n"
     "doctor_event_analysis(partition: str?, tenant: str='default', limit: int=80)\n"
@@ -229,34 +303,122 @@ def _coerce_dsml_value(value: str):
         return value
 
 
-def _extract_dsml_tool_call(text: str) -> dict | None:
-    """Convert DeepSeek DSML invoke markup into the local tool-call shape."""
-    match = _DSML_INVOKE_RE.search(text)
-    if not match:
-        return None
-    tool_name = match.group(1).strip()
-    if not tool_name:
-        return None
-    args = {
-        param.group(1).strip(): _coerce_dsml_value(param.group(2))
-        for param in _DSML_PARAM_RE.finditer(match.group(2))
-    }
-    return {"tool": tool_name, "args": args}
+def _extract_dsml_tool_calls(text: str) -> list[dict]:
+    """Convert DeepSeek DSML invoke markup into local tool-call shapes."""
+    calls: list[dict] = []
+    for match in _DSML_INVOKE_RE.finditer(text):
+        tool_name = match.group(1).strip()
+        if not tool_name:
+            continue
+        args = {
+            param.group(1).strip(): _coerce_dsml_value(param.group(2))
+            for param in _DSML_PARAM_RE.finditer(match.group(2))
+        }
+        calls.append({"tool": tool_name, "args": args})
+    return calls
 
 
-def _extract_tool_call(text: str) -> dict | None:
-    """Return parsed tool call dict if the model output contains one, else None."""
-    match = _TOOL_RE.search(text)
-    if match:
+def _extract_tool_calls(text: str) -> list[dict]:
+    """Return every tool call in a model response, preserving model order.
+
+    The model sometimes emits several independent calls in one completion
+    (for example partition detail + events + logs). Executing only the first
+    one makes the model answer from partial evidence and invent the rest.
+    """
+    calls: list[dict] = []
+    for match in _TOOL_RE.finditer(text):
         try:
             obj = json.loads(match.group())
         except json.JSONDecodeError:
-            obj = None
-        if isinstance(obj, dict) and "tool" in obj:
-            if not isinstance(obj.get("args"), dict):
-                obj["args"] = {k: v for k, v in obj.items() if k not in ("tool", "args")}
-            return obj
-    return _extract_dsml_tool_call(text)
+            continue
+        if not isinstance(obj, dict) or "tool" not in obj:
+            continue
+        if not isinstance(obj.get("args"), dict):
+            obj["args"] = {k: v for k, v in obj.items() if k not in ("tool", "args")}
+        calls.append(obj)
+    if calls:
+        return calls
+    return _extract_dsml_tool_calls(text)
+
+
+def _extract_tool_call(text: str) -> dict | None:
+    """Backward-compatible single-call helper."""
+    calls = _extract_tool_calls(text)
+    return calls[0] if calls else None
+
+
+def _strip_tool_calls(text: str) -> str:
+    """Remove protocol markup so the model does not see its own call syntax."""
+    stripped = _TOOL_RE.sub("", text)
+    stripped = _DSML_INVOKE_RE.sub("", stripped)
+    stripped = re.sub(
+        rf"</?{_DSML_BAR}DSML{_DSML_BAR}[^>]*>", "", stripped, flags=re.IGNORECASE
+    )
+    return stripped.strip()
+
+
+def _requires_tool_use(user_message: str) -> bool:
+    return bool(_TELEMETRY_TERMS.search(user_message or ""))
+
+
+def _metric_value_requested(user_message: str) -> bool:
+    text = user_message or ""
+    return bool(_METRIC_VALUE_TERMS.search(text) and _METRIC_VALUE_INTENT.search(text))
+
+
+def _partition_hint(user_message: str) -> str:
+    match = _PARTITION_HINT_RE.search(user_message or "")
+    return match.group(1).lower() if match else ""
+
+
+def _first_metric_name(results: list[tuple[str, str]]) -> str:
+    for name, result in results:
+        if name != "doctor_metrics_names":
+            continue
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            continue
+        names = payload.get("metric_names") if isinstance(payload, dict) else None
+        if isinstance(names, list) and names:
+            return str(names[0])
+    return ""
+
+
+def _tool_result_is_empty(result: str) -> bool:
+    """Best-effort detection of an empty Doctor/Guardian result payload."""
+    text = (result or "").strip()
+    if not text:
+        return True
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("returned") == 0:
+        return True
+    for key in ("results", "traces", "spans", "services", "partitions", "log_groups"):
+        if isinstance(payload.get(key), list) and not payload[key]:
+            return True
+    return False
+
+
+def _format_tool_results(results: list[tuple[str, str]]) -> str:
+    blocks = ["[Tool results]"]
+    empty_names: list[str] = []
+    for name, result in results:
+        blocks.append(f"## {name}\n{result}")
+        if _tool_result_is_empty(result):
+            empty_names.append(name)
+    if empty_names:
+        blocks.append(
+            "Empty results: "
+            + ", ".join(sorted(set(empty_names)))
+            + ". Report these as empty; do not substitute invented data."
+        )
+    blocks.append("Now answer based only on these results. " + _EVIDENCE_REMINDER)
+    return "\n\n".join(blocks)
 
 
 async def _stream_text_once(text: str) -> AsyncIterator[str]:
@@ -287,6 +449,13 @@ async def run_agent_turn(
     # Always inject tool instructions, even if user customized the system prompt
     tool_instructions = build_tool_instructions(allowed)
     full_system_prompt = system_prompt + persona.operating_policy + tool_instructions
+    if _metric_value_requested(user_message):
+        full_system_prompt += (
+            "\n\nThis turn asks for a metric value. Discover the metric name and "
+            "labels if needed, then run doctor_metrics_query in this same turn. "
+            "Do not stop at the catalog and do not present a catalog listing as "
+            "the answer to a value question."
+        )
     logger.info(
         "[LOOP] Starting %s turn (profile=%s). System prompt (first 200): %.200s",
         persona.id,
@@ -299,13 +468,31 @@ async def run_agent_turn(
 
     await session_mgr.add_message(session_id, "user", user_message)
 
+    require_tools = _requires_tool_use(user_message)
+    metric_value = _metric_value_requested(user_message)
+    partition_hint = _partition_hint(user_message)
+
     if not stream:
-        result = await _run_tool_loop(messages, profile=profile, allowed=allowed)
+        result = await _run_tool_loop(
+            messages,
+            profile=profile,
+            allowed=allowed,
+            require_tools=require_tools,
+            metric_value=metric_value,
+            partition_hint=partition_hint,
+        )
         await session_mgr.add_message(session_id, "assistant", result, persona=persona.id)
         return result
 
     return _stream_tool_loop(
-        messages, session_id, profile=profile, allowed=allowed, persona_id=persona.id
+        messages,
+        session_id,
+        profile=profile,
+        allowed=allowed,
+        persona_id=persona.id,
+        require_tools=require_tools,
+        metric_value=metric_value,
+        partition_hint=partition_hint,
     )
 
 
@@ -314,29 +501,73 @@ async def _run_tool_loop(
     *,
     profile: str = "local",
     allowed: set[str] | None = None,
+    require_tools: bool = False,
+    metric_value: bool = False,
+    partition_hint: str = "",
 ) -> str:
     """Non-streaming: run up to MAX_TOOL_ROUNDS of tool calls then return final answer."""
-    for _ in range(MAX_TOOL_ROUNDS):
+    nudged = False
+    metric_nudged = False
+    used_tools = False
+    for round_num in range(MAX_TOOL_ROUNDS):
         response = await chat_completion(messages, stream=False, profile=profile)
-        logger.info("[LOOP] LLM raw response (non-stream): %.500s", response)
-        tool_call = _extract_tool_call(response)
-        if not tool_call:
+        logger.info("[LOOP] LLM raw response (non-stream, round %d): %.500s", round_num, response)
+        tool_calls = _extract_tool_calls(response)
+        if not tool_calls:
+            if require_tools and not nudged and not used_tools:
+                logger.info("[LOOP] Telemetry request without a tool call; nudging model.")
+                messages.append({"role": "system", "content": _TOOL_USE_NUDGE})
+                nudged = True
+                continue
             logger.info("[LOOP] No tool call detected, returning response.")
             return response
 
-        tool_name = tool_call.get("tool", "")
-        tool_args = tool_call.get("args", {})
-        logger.info("Tool call: %s %s", tool_name, tool_args)
+        used_tools = True
+        assistant_text = _strip_tool_calls(response)
+        results: list[tuple[str, str]] = []
+        for tool_call in tool_calls:
+            tool_name = str(tool_call.get("tool", ""))
+            tool_args = tool_call.get("args", {})
+            logger.info("Tool call (round %d): %s %s", round_num, tool_name, tool_args)
+            tool_result = await execute_tool(tool_name, tool_args, allowed=allowed)
+            logger.info("Tool result (%s): %.200s", tool_name, tool_result)
+            results.append((tool_name, tool_result))
 
-        tool_result = await execute_tool(tool_name, tool_args, allowed=allowed)
-        logger.info("Tool result: %.200s", tool_result)
-
-        # Feed result back as a user message so the model can use it
-        messages.append({"role": "assistant", "content": response})
-        messages.append({
-            "role": "user",
-            "content": f"[Tool result for {tool_name}]\n{tool_result}\n\nNow answer based on this."
-        })
+        if assistant_text:
+            messages.append({"role": "assistant", "content": assistant_text})
+        messages.append({"role": "user", "content": _format_tool_results(results)})
+        if (
+            metric_value
+            and not metric_nudged
+            and {name for name, _ in results} <= {"doctor_metrics_names", "doctor_metrics_labels"}
+        ):
+            metric_name = _first_metric_name(results)
+            if metric_name:
+                selector = metric_name
+                if partition_hint:
+                    selector += f'{{guardian_partition="{partition_hint}"}}'
+                promql = f"topk(5, {selector})"
+                logger.info("Auto metric value query: %s", promql)
+                auto_result = await execute_tool(
+                    "doctor_metrics_query",
+                    {"promql": promql, "compact": True},
+                    allowed=allowed,
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Automatic metric value query]\n"
+                            f"PromQL: {promql}\n{auto_result}\n\n"
+                            "The user asked for a value, so this query was run "
+                            "automatically after the catalog lookup. Report the "
+                            "real result; do not answer with only the catalog."
+                        ),
+                    }
+                )
+            else:
+                messages.append({"role": "system", "content": _METRIC_QUERY_NUDGE})
+            metric_nudged = True
 
     # Fallback: final completion after max rounds
     return await chat_completion(messages, stream=False, profile=profile)
@@ -366,6 +597,9 @@ async def _stream_tool_loop(
     profile: str = "local",
     allowed: set[str] | None = None,
     persona_id: str = DEFAULT_PERSONA_ID,
+    require_tools: bool = False,
+    metric_value: bool = False,
+    partition_hint: str = "",
 ) -> AsyncIterator[str]:
     """Detect tool calls, execute silently, then stream the final answer.
 
@@ -374,13 +608,21 @@ async def _stream_tool_loop(
     DSML markup in streaming mode, which the loop cannot reliably parse.
     """
     working_messages = list(messages)
+    nudged = False
+    metric_nudged = False
+    used_tools = False
 
     for round_num in range(MAX_TOOL_ROUNDS):
         response = await chat_completion(working_messages, stream=False, profile=profile)
         logger.info("[LOOP] LLM raw response (round %d): %.500s", round_num, response)
 
-        tool_call = _extract_tool_call(response)
-        if not tool_call:
+        tool_calls = _extract_tool_calls(response)
+        if not tool_calls:
+            if require_tools and not nudged and not used_tools:
+                logger.info("[LOOP] Telemetry request without a tool call; nudging model.")
+                working_messages.append({"role": "system", "content": _TOOL_USE_NUDGE})
+                nudged = True
+                continue
             logger.info("[LOOP] No tool call detected in round %d, streaming final answer.", round_num)
             for chunk in _text_chunks(response):
                 yield chunk
@@ -388,22 +630,62 @@ async def _stream_tool_loop(
                 await session_mgr.add_message(session_id, "assistant", response, persona=persona_id)
             return
 
-        # Execute tool silently (no streaming to client yet)
-        tool_name = tool_call.get("tool", "")
-        tool_args = tool_call.get("args", {})
-        logger.info("Tool call (round %d): %s %s", round_num, tool_name, tool_args)
+        # Execute every call in this completion, not just the first one.
+        used_tools = True
+        results: list[tuple[str, str]] = []
+        status_lines: list[str] = []
+        for tool_call in tool_calls:
+            tool_name = str(tool_call.get("tool", ""))
+            tool_args = tool_call.get("args", {})
+            logger.info("Tool call (round %d): %s %s", round_num, tool_name, tool_args)
+            status_lines.append(_tool_status_text(tool_name, tool_args))
 
-        # Yield a status indicator so the UI shows something is happening
-        yield f"\n\n*{_tool_status_text(tool_name, tool_args)}*\n\n"
+        # Yield one status block so the UI shows what is running.
+        yield "\n\n" + "\n".join(f"*{line}*" for line in status_lines) + "\n\n"
 
-        tool_result = await execute_tool(tool_name, tool_args, allowed=allowed)
-        logger.info("Tool result: %.200s", tool_result)
+        for tool_call in tool_calls:
+            tool_name = str(tool_call.get("tool", ""))
+            tool_args = tool_call.get("args", {})
+            tool_result = await execute_tool(tool_name, tool_args, allowed=allowed)
+            logger.info("Tool result (%s): %.200s", tool_name, tool_result)
+            results.append((tool_name, tool_result))
 
-        working_messages.append({"role": "assistant", "content": response})
-        working_messages.append({
-            "role": "user",
-            "content": f"[Tool result for {tool_name}]\n{tool_result}\n\nNow answer based on this."
-        })
+        assistant_text = _strip_tool_calls(response)
+        if assistant_text:
+            working_messages.append({"role": "assistant", "content": assistant_text})
+        working_messages.append({"role": "user", "content": _format_tool_results(results)})
+        if (
+            metric_value
+            and not metric_nudged
+            and {name for name, _ in results} <= {"doctor_metrics_names", "doctor_metrics_labels"}
+        ):
+            metric_name = _first_metric_name(results)
+            if metric_name:
+                selector = metric_name
+                if partition_hint:
+                    selector += f'{{guardian_partition="{partition_hint}"}}'
+                promql = f"topk(5, {selector})"
+                logger.info("Auto metric value query: %s", promql)
+                auto_result = await execute_tool(
+                    "doctor_metrics_query",
+                    {"promql": promql, "compact": True},
+                    allowed=allowed,
+                )
+                working_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Automatic metric value query]\n"
+                            f"PromQL: {promql}\n{auto_result}\n\n"
+                            "The user asked for a value, so this query was run "
+                            "automatically after the catalog lookup. Report the "
+                            "real result; do not answer with only the catalog."
+                        ),
+                    }
+                )
+            else:
+                working_messages.append({"role": "system", "content": _METRIC_QUERY_NUDGE})
+            metric_nudged = True
 
     # Max rounds exhausted — do one final non-streaming call
     final = await chat_completion(working_messages, stream=False, profile=profile)

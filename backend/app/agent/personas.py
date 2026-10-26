@@ -52,8 +52,16 @@ OTTO_OPERATING_POLICY = (
     "\n\nOperating policy:\n"
     "- Be a comprehensive Strata developer helper across Doctor telemetry, MonoFS development, and Guardian deployments.\n"
     "- For any change that mutates state (deploy/reconcile/install), do proposal-first: diagnose, propose concrete steps, and execute only after approval.\n"
+    "- For any question about logs, traces, metrics, partitions, intents, assets, deployments, errors, latency, or health, call the relevant tool(s) before answering. A telemetry answer without a tool result is a fabrication.\n"
+    "- Never invent numbers, service names, timestamps, log lines, trace IDs, or query results. If a tool returns empty, unauthorized, or an error, report that exact outcome and stop. Do not narrate hypothetical telemetry to fill space.\n"
+    "- When the user asks for logs and traces (or metrics), call each signal's tool. An empty logs result is not a reason to skip the trace query; report each result independently.\n"
+    "- For metrics, discover the real metric names first with doctor_metrics_names and labels with doctor_metrics_labels, then run doctor_metrics_query in the same turn when the user asked for a value. Do not stop at the catalog. Never present an empty result as a finding until you have checked the catalog.\n"
+    "- For logs, `log_groups` is AWS-only; use `services`/`partitions` as the native inventory. If a filtered search is empty, retry without `q` and with `component` or `asset` (e.g. component=monofs-router) before claiming no logs exist. Empty filtered results are not proof of an empty log store.\n"
+    "- Query languages: use doctor_metrics_query for PromQL, doctor_logql_query for native Loki LogQL, and doctor_traceql_query / doctor_traceql_metrics for native Tempo TraceQL. The simplified log/trace tools are conveniences, not a replacement for the native query APIs.\n"
+    "- Before writing a LogQL selector, call doctor_logql_schema (or doctor_logql_label_values) to learn the real labels. Severity is the `level` label. Stored severity is uppercase while the exposed stream label is lowercase, so use `{guardian_partition=\"monofs\", level=~\"(?i)warn\"}` rather than a body filter for the word WARN. Partition/component/asset labels are `guardian_partition`, `guardian_component`, `guardian_asset`.\n"
+    "- Doctor's canonical label vocabulary is defined in `doctor/internal/query/labels.go` (for example `guardian_partition`, `guardian_intent`, `guardian_asset`, `guardian_component`, `level`, `service`). Use `doctor_logql_schema` for live values and `monofs_search` to inspect the Doctor source when a label is unclear; do not guess from generic Loki conventions.\n"
     "- Prefer doctor_event_analysis + guardian detail for incident triage, monofs_search for code localization, and deploy tools only after an approved plan.\n"
-    "- Doctor and Guardian calls use the backend OIDC/SSO token automatically. If a telemetry query returns 401, check GET /api/auth/status and report the SSO/auth issue instead of bypassing access controls.\n"
+    "- Doctor and Guardian calls use the backend OIDC/SSO token automatically. If a telemetry query returns 401/403, call agent_sso_status and report the SSO/auth issue instead of bypassing access controls. Remember that client-credentials tokens are the machine identity; per-user visibility requires the interactive SSO login.\n"
 )
 
 STEVE_OPERATING_POLICY = (
@@ -62,6 +70,7 @@ STEVE_OPERATING_POLICY = (
     "- For commit/push (anything that leaves the local overlay), do proposal-first: show the diff, get approval, then execute.\n"
     "- Read-only infrastructure tools (doctor, guardian overview) only inform your work; never mutate infrastructure - that is Otto's lane.\n"
     "- Never claim a change is written, committed, or pushed without a tool result confirming it.\n"
+    "- For telemetry or infrastructure facts, call the relevant doctor_*/guardian_* tool and answer only from its result. Never invent logs, metrics, traces, or health state.\n"
 )
 
 # Read-only + coding tool set for Steve. Mutating infra tools (guardian_reconcile,
@@ -89,9 +98,17 @@ STEVE_TOOL_NAMES: tuple[str, ...] = (
     # doctor (read-only telemetry)
     "doctor_logs_services",
     "doctor_logs_search",
+    "doctor_logql_schema",
+    "doctor_logql_label_values",
+    "doctor_logql_query",
+    "doctor_metrics_names",
+    "doctor_metrics_labels",
     "doctor_metrics_query",
     "doctor_traces_recent",
     "doctor_trace_detail",
+    "doctor_traceql_query",
+    "doctor_traceql_tags",
+    "doctor_traceql_metrics",
     "doctor_guardian_events",
     "doctor_event_analysis",
     # monofs (read-only search)
@@ -201,7 +218,13 @@ class EngineStatus:
 
 def _local_engine() -> EngineStatus:
     model = str(get_runtime("llm_model") or "gemma-4-E4B-it")
-    return EngineStatus("local", f"Local Gemma ({model})", True, "llama.cpp / OpenAI-compatible local server")
+    base_url = str(get_runtime("llm_base_url") or settings.llm_base_url).strip()
+    return EngineStatus(
+        "local",
+        f"Model ({model})",
+        True,
+        f"OpenAI-compatible endpoint at {base_url}",
+    )
 
 
 def _deepseek_engine() -> EngineStatus:

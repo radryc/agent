@@ -80,8 +80,22 @@ def build_tool_instructions(allowed: set[str] | None = None) -> str:
 
     lines = [
         "\n\nYou have access to infrastructure and diagnostic tools. "
-        "To use a tool, output ONLY a JSON block on its own line:\n"
-        '{"tool": "<name>", "args": {<params>}}\n',
+        "To use a tool, output ONLY JSON blocks, one per line:\n"
+        '{"tool": "<name>", "args": {<params>}}\n'
+        "You may emit several independent calls in the same response; every "
+        "line will be executed before you answer.\n",
+        "\nEvidence rules (non-negotiable):\n"
+        "- For any question about logs, traces, metrics, partitions, intents, "
+        "assets, deployments, errors, latency, or health, call the relevant "
+        "tool(s) before answering.\n"
+        "- Answer only from tool results. Never invent counts, service names, "
+        "timestamps, latencies, log lines, trace IDs, or query results.\n"
+        "- If a tool returns an error, 401/403, or an empty result, say exactly "
+        "that. Do not fill the gap with plausible-sounding telemetry.\n"
+        "- If the user asks for logs AND traces (or metrics), query each signal "
+        "separately. Do not skip traces just because logs came back empty; an "
+        "empty trace result is itself evidence.\n"
+        "- The persona controls tone, not facts.\n",
     ]
 
     order = ["general", "strata", "guardian", "doctor", "monofs", "workspace"]
@@ -103,8 +117,9 @@ def build_tool_instructions(allowed: set[str] | None = None) -> str:
             lines.append(f"- {s.name}({params}): {s.description}{mutating_label}")
 
     lines.append(
-        "\nImportant: After receiving a tool result, use it to formulate your final answer. "
-        "Do NOT output tool calls in your final answer."
+        "\nImportant: After receiving tool results, use them to formulate your "
+        "final answer. Do NOT output tool calls in your final answer. If the "
+        "results are empty, say that; do not invent data to fill the response."
     )
     return "\n".join(lines)
 
@@ -699,7 +714,11 @@ async def _tool_strata_stack_check(args: dict) -> str:
                 timeout=timeout,
                 env=await _monofs_env(),
             )
-            checks["guardianctl"] = {"status": "ok", "details": _truncate(guardianctl_response, 700)}
+            failed = guardianctl_response.startswith("Error")
+            checks["guardianctl"] = {
+                "status": "error" if failed else "ok",
+                "details": _truncate(guardianctl_response, 700),
+            }
         except Exception as e:
             checks["guardianctl"] = {"status": "error", "details": str(e)}
     else:
@@ -717,7 +736,7 @@ async def _tool_strata_stack_check(args: dict) -> str:
 
 register(Skill(
     name="strata_stack_check", category="strata",
-    description="Check whether Doctor, Guardian, MonoFS CLI, and guardianctl are reachable/configured. Use before deep diagnostics, development, or deployment work.",
+    description="Check whether Doctor, Guardian, MonoFS CLI, and guardianctl are reachable/configured. Use only when a tool is failing or before deployment work; do not call it for routine telemetry queries.",
     parameters={"timeout_seconds": "Optional command timeout per check (default 8)"},
     status_prefix="Checking Strata stack readiness",
     handler=_tool_strata_stack_check,
@@ -1043,21 +1062,67 @@ register(Skill(
 # --- DOCTOR TOOLS ---
 # ---------------------------------------------------------------------------
 
+def _log_record_partition(record: dict) -> str:
+    attrs = record.get("attributes") or {}
+    return str(
+        record.get("partition")
+        or attrs.get("guardian.partition")
+        or attrs.get("guardian_partition")
+        or ""
+    )
+
+
+def _log_record_matches(
+    record: dict,
+    *,
+    service: str = "",
+    component: str = "",
+    asset: str = "",
+) -> bool:
+    attrs = record.get("attributes") or {}
+    record_component = str(attrs.get("guardian.component") or "")
+    record_asset = str(attrs.get("guardian.asset") or "")
+    if component and record_component != component:
+        return False
+    if asset and record_asset != asset:
+        return False
+    if service:
+        candidates = (
+            str(record.get("service") or ""),
+            record_component,
+            record_asset,
+            str(attrs.get("service.alias") or ""),
+            str(attrs.get("service.name") or ""),
+        )
+        if not any(candidate and service in candidate for candidate in candidates):
+            return False
+    return True
+
+
 async def _tool_doctor_logs_services(args: dict) -> str:
     partition = str(args.get("partition", "")).strip()
     params = ["tenant=default"]
     if partition:
         params.append(f"partition={quote_plus(partition)}")
     try:
-        data = await _doctor_get(f"/v1/logs/services?{'&'.join(params)}")
-        return _truncate(data)
+        raw = await _doctor_get(f"/v1/logs/services?{'&'.join(params)}")
+        payload = json.loads(raw)
+        services = payload.get("services") or []
+        partitions = payload.get("partitions") or []
+        payload["service_count"] = len(services)
+        payload["partition_count"] = len(partitions)
+        payload["note"] = (
+            "services/partitions are Doctor's native log inventory. "
+            "log_groups is AWS/CloudWatch-only and is normally empty here."
+        )
+        return _truncate(json.dumps(payload, indent=2))
     except Exception as e:
         logger.warning("doctor_logs_services failed: %s", e)
         return f"Doctor log services query failed: {e}"
 
 register(Skill(
     name="doctor_logs_services", category="doctor",
-    description="List all services that have log data in Doctor. Use this to discover what's emitting telemetry. Filter by partition to scope to agent, doctor, monofs, etc.",
+    description="List services/partitions with native log data in Doctor. `services` is the log inventory; `log_groups` is AWS/CloudWatch-only and is normally empty. Filter by partition to scope to agent, doctor, monofs, etc.",
     parameters={"partition": "Optional Guardian partition filter (e.g. agent)"},
     status_prefix="Querying Doctor log services",
     handler=_tool_doctor_logs_services,
@@ -1066,51 +1131,561 @@ register(Skill(
 # ---------------------------------------------------------------------------
 
 async def _tool_doctor_logs_search(args: dict) -> str:
-    service = args.get("service", "")
-    query = args.get("query", "")
-    partition = args.get("partition", "")
-    from_ts = args.get("from", "")
-    to_ts = args.get("to", "")
+    service = str(args.get("service", "")).strip()
+    component = str(args.get("component", "")).strip()
+    asset = str(args.get("asset", "")).strip()
+    query = str(args.get("query", "")).strip()
+    partition = str(args.get("partition", "")).strip()
+    from_ts = str(args.get("from", "")).strip()
+    to_ts = str(args.get("to", "")).strip()
     limit = _to_int(args.get("limit"), default=20, minimum=1, maximum=100)
-    params = [f"tenant=default", f"limit={min(limit, 100)}"]
-    if partition:
-        params.append(f"partition={quote_plus(str(partition))}")
-    if service:
-        params.append(f"service={quote_plus(str(service))}")
-    if query:
-        params.append(f"q={quote_plus(str(query))}")
-    if from_ts:
-        params.append(f"from={quote_plus(str(from_ts))}")
-    if to_ts:
-        params.append(f"to={quote_plus(str(to_ts))}")
+
+    # Doctor applies the partition filter *after* the row limit, so a small
+    # limit can return zero even when matching records exist. Over-fetch, then
+    # filter and truncate here. Short service names / components / assets are
+    # matched locally because the stored service field is fully qualified
+    # (e.g. monofs.monofs-storage.router-a).
+    client_filter = bool(component or asset or (service and "." not in service))
+    scan_limit = 1000 if (partition or client_filter) else limit
+
+    def build_params(*, include_service: bool, scan: int) -> list[str]:
+        params = ["tenant=default", f"limit={scan}"]
+        if partition:
+            params.append(f"partition={quote_plus(partition)}")
+        if include_service and service:
+            params.append(f"service={quote_plus(service)}")
+        if query:
+            params.append(f"q={quote_plus(query)}")
+        if from_ts:
+            params.append(f"from={quote_plus(from_ts)}")
+        if to_ts:
+            params.append(f"to={quote_plus(to_ts)}")
+        return params
+
+    async def fetch(include_service: bool, scan: int) -> dict | None:
+        params = build_params(include_service=include_service, scan=scan)
+        raw = await _doctor_get(f"/v1/logs/search?{'&'.join(params)}")
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        return payload
+
     try:
-        data = await _doctor_get(f"/v1/logs/search?{'&'.join(params)}")
-        return _truncate(data)
+        payload = await fetch(include_service=not client_filter, scan=scan_limit)
+        if payload is None:
+            return "Doctor returned a non-JSON log payload."
+
+        results = payload.get("results") or []
+        if client_filter:
+            results = [
+                record
+                for record in results
+                if isinstance(record, dict)
+                and _log_record_matches(
+                    record, service=service, component=component, asset=asset
+                )
+            ]
+
+        # If a fully-qualified service selector returned nothing, retry with a
+        # broad scan and match the service/component/asset locally.
+        if not results and service and not client_filter:
+            payload = await fetch(include_service=False, scan=1000)
+            if payload is not None:
+                results = [
+                    record
+                    for record in (payload.get("results") or [])
+                    if isinstance(record, dict)
+                    and _log_record_matches(record, service=service)
+                ]
+                scan_limit = 1000
+
+        payload["filters"] = {
+            "partition": partition,
+            "service": service,
+            "component": component,
+            "asset": asset,
+            "query": query,
+        }
+        payload["scanned"] = scan_limit
+        payload["returned"] = len(results)
+        payload["shown"] = min(len(results), limit)
+        payload["results"] = results[:limit]
+        return _truncate(json.dumps(payload, indent=2), 20000)
     except Exception as e:
         logger.warning("doctor_logs_search failed: %s", e)
         return f"Doctor log search failed: {e}"
 
 register(Skill(
     name="doctor_logs_search", category="doctor",
-    description="Search logs in Doctor telemetry. Filter by partition, service, text query, and time range. Use for debugging failures and errors.",
+    description="Search logs in Doctor telemetry. Filter by partition, Guardian component/asset, fully-qualified service, text query, and time range. Use component/asset for short names like monofs-router or router-a; the tool over-fetches and filters locally so partition limits do not hide records. log_groups is AWS-only and is not a log inventory.",
     parameters={
-        "partition": "Guardian partition to filter (optional, e.g. agent)",
-        "service": "Service name to filter logs (optional)",
-        "query": "Text to search in log messages (optional)",
+        "partition": "Guardian partition to filter (optional, e.g. monofs)",
+        "service": "Service name: fully qualified or short asset/component name (optional)",
+        "component": "Guardian component filter, e.g. monofs-router (optional)",
+        "asset": "Guardian asset filter, e.g. router-a (optional)",
+        "query": "Text to search in log bodies (optional; omit to list recent logs)",
         "from": "Start time RFC3339 (optional)",
         "to": "End time RFC3339 (optional)",
-        "limit": "Max results (default 20, max 100)",
+        "limit": "Max results to show (default 20, max 100; the tool scans up to 1000)",
     },
     status_prefix="Searching Doctor logs",
     handler=_tool_doctor_logs_search,
 ))
 
 # ---------------------------------------------------------------------------
+# Native Loki (LogQL) and Tempo (TraceQL) query tools
+# ---------------------------------------------------------------------------
+
+def _compact_loki_payload(raw: str, max_lines: int = 200) -> str:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return _truncate(raw)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return _truncate(raw)
+    result_type = str(data.get("resultType") or "")
+    result = data.get("result")
+    if result_type == "matrix":
+        return _compact_metric_payload(raw)
+
+    lines = []
+    if isinstance(result, list):
+        for stream in result:
+            if not isinstance(stream, dict):
+                continue
+            labels = stream.get("stream") or {}
+            values = stream.get("values") or []
+            for item in values:
+                if isinstance(item, list) and len(item) >= 2:
+                    lines.append(
+                        {"time": item[0], "labels": labels, "line": item[1]}
+                    )
+    return json.dumps(
+        {
+            "result_type": result_type,
+            "streams": len(result) if isinstance(result, list) else 0,
+            "lines": len(lines),
+            "results": lines[:max_lines],
+        },
+        indent=2,
+    )
+
+
+def _compact_tempo_search(raw: str, max_traces: int = 100) -> str:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return _truncate(raw)
+    traces = payload.get("traces") if isinstance(payload, dict) else None
+    if not isinstance(traces, list):
+        return _truncate(raw)
+    compact = []
+    for trace in traces[:max_traces]:
+        if not isinstance(trace, dict):
+            continue
+        span_sets = trace.get("spanSets") or []
+        matched = sum(int(item.get("matched") or 0) for item in span_sets if isinstance(item, dict))
+        compact.append(
+            {
+                "trace_id": trace.get("traceID"),
+                "root_service": trace.get("rootServiceName"),
+                "root_trace": trace.get("rootTraceName"),
+                "start_time": trace.get("startTimeUnixNano"),
+                "duration_ms": trace.get("durationMs"),
+                "matched_spans": matched,
+                "span_names": [
+                    span.get("name")
+                    for span_set in span_sets
+                    for span in (span_set.get("spans") or [])
+                    if isinstance(span, dict) and span.get("name")
+                ][:10],
+            }
+        )
+    return json.dumps({"count": len(traces), "returned": len(compact), "traces": compact}, indent=2)
+
+
+_SEVERITY_EQ_RE = re.compile(
+    r'\b(level|severity_text)\s*=\s*"([a-zA-Z]+)"', re.IGNORECASE
+)
+
+
+def _normalize_logql_severity(query: str) -> str:
+    """Doctor stores severity uppercase but exposes lowercase stream labels.
+
+    Rewrite an equality matcher like level="warn" to a case-insensitive regex
+    so the same selector works against the stored value.
+    """
+    return _SEVERITY_EQ_RE.sub(
+        lambda match: f'{match.group(1)}=~"(?i){match.group(2)}"',
+        query,
+    )
+
+
+async def _tool_doctor_logql_query(args: dict) -> str:
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return "Error: LogQL query is required (e.g. '{service=~\".+\"} |= \"error\"')"
+    query = _normalize_logql_severity(query)
+    limit = _to_int(args.get("limit"), default=100, minimum=1, maximum=1000)
+    direction = str(args.get("direction", "backward")).strip() or "backward"
+    params = [
+        f"query={quote_plus(query)}",
+        f"limit={limit}",
+        f"direction={quote_plus(direction)}",
+    ]
+    start = str(args.get("start", "")).strip()
+    end = str(args.get("end", "")).strip()
+    if start:
+        params.append(f"start={quote_plus(start)}")
+    if end:
+        params.append(f"end={quote_plus(end)}")
+    try:
+        raw = await _doctor_get(f"/loki/api/v1/query_range?{'&'.join(params)}")
+        compact = _compact_loki_payload(raw, max_lines=limit)
+        # If the query returned no lines and looks like a severity body filter,
+        # explain the real label vocabulary instead of leaving a blank result.
+        empty = False
+        try:
+            payload = json.loads(compact)
+            empty = not (payload.get("results") or [])
+        except (TypeError, ValueError):
+            pass
+        if empty:
+            lowered = query.lower()
+            severity_filter = any(
+                token in lowered for token in ('warn', 'info', 'error', 'debug')
+            )
+            has_level_label = "level" in lowered
+            if severity_filter and not has_level_label:
+                payload = json.loads(compact)
+                payload["hint"] = (
+                    "No lines matched. Severity is a stream label in Doctor, not "
+                    "body text. Stored severity values are uppercase while the "
+                    'stream label is lowercase, so use a case-insensitive regex: '
+                    '{guardian_partition="monofs", level=~"(?i)warn"} or '
+                    '{level=~"(?i)warn|error"}. Call doctor_logql_schema for the '
+                    "actual labels and values."
+                )
+                return json.dumps(payload, indent=2)
+        return compact
+    except Exception as e:
+        logger.warning("doctor_logql_query failed: %s", e)
+        return f"Doctor LogQL query failed: {e}"
+
+
+register(Skill(
+    name="doctor_logql_query", category="doctor",
+    description="Query Doctor with native Loki LogQL (/loki/api/v1/query_range). Supports stream selectors, line filters, label filters, parsers, and metric queries. Call doctor_logql_schema first to see labels; severity is the `level` stream label (level=\"warn\"), not body text. Use this when the simplified doctor_logs_search is not expressive enough.",
+    parameters={
+        "query": "LogQL query, e.g. '{guardian_partition=\"monofs\"} |= \"metadata not found\"'",
+        "start": "Start time (RFC3339 or Unix timestamp; default 1h ago)",
+        "end": "End time (RFC3339 or Unix timestamp; default now)",
+        "limit": "Max log lines (default 100, max 1000)",
+        "direction": "backward or forward (default backward)",
+    },
+    status_prefix="Querying Doctor LogQL",
+    handler=_tool_doctor_logql_query,
+))
+
+
+async def _tool_doctor_logql_schema(args: dict) -> str:
+    """Expose Doctor's actual Loki stream labels and the values agents need."""
+    try:
+        raw = await _doctor_get("/loki/api/v1/labels")
+        payload = json.loads(raw)
+    except Exception as e:
+        logger.warning("doctor_logql_schema failed: %s", e)
+        return f"Doctor LogQL labels query failed: {e}"
+    labels = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(labels, list):
+        return _truncate(raw)
+    labels = sorted(str(label) for label in labels)
+
+    values: dict[str, list[str]] = {}
+    for label in ("level", "guardian_partition", "guardian_component", "guardian_asset", "service"):
+        if label not in labels:
+            continue
+        try:
+            value_raw = await _doctor_get(
+                f"/loki/api/v1/label/{quote_plus(label)}/values"
+            )
+            value_payload = json.loads(value_raw)
+            data = value_payload.get("data") if isinstance(value_payload, dict) else None
+            if isinstance(data, list):
+                values[label] = [str(value) for value in data[:50]]
+        except Exception:
+            values[label] = []
+
+    return json.dumps(
+        {
+            "labels": labels,
+            "values": values,
+            "examples": [
+                '{guardian_partition="monofs", level=~"(?i)warn"}',
+                '{guardian_partition="monofs", guardian_component="monofs-server"} |= "metadata not found"',
+                '{guardian_partition="monofs"} |~ "metadata.*not found"',
+            ],
+            "note": (
+                "level is a stream label. Stored severity is uppercase (WARN) "
+                "while the exposed label value is lowercase (warn), so prefer "
+                'level=~"(?i)warn" or level=~"(?i)warn|error". Do not search for '
+                "the word WARN/INFO in the log body unless the message actually "
+                "contains it."
+            ),
+        },
+        indent=2,
+    )
+
+
+register(Skill(
+    name="doctor_logql_schema", category="doctor",
+    description="Return Doctor's actual Loki stream labels and key label values (level, guardian_partition, guardian_component, guardian_asset, service) plus example selectors. Call this before writing a LogQL query so level/partition filters use the real label names.",
+    parameters={},
+    status_prefix="Inspecting Doctor log label schema",
+    handler=_tool_doctor_logql_schema,
+))
+
+
+async def _tool_doctor_logql_label_values(args: dict) -> str:
+    label = str(args.get("label", "")).strip()
+    if not label:
+        return "Error: label is required (e.g. level, guardian_partition, guardian_component)"
+    params = []
+    start = str(args.get("start", "")).strip()
+    end = str(args.get("end", "")).strip()
+    if start:
+        params.append(f"start={quote_plus(start)}")
+    if end:
+        params.append(f"end={quote_plus(end)}")
+    path = f"/loki/api/v1/label/{quote_plus(label)}/values"
+    if params:
+        path += "?" + "&".join(params)
+    try:
+        return _truncate(await _doctor_get(path), 12000)
+    except Exception as e:
+        logger.warning("doctor_logql_label_values(%s) failed: %s", label, e)
+        return f"Doctor LogQL label-values query failed: {e}"
+
+
+register(Skill(
+    name="doctor_logql_label_values", category="doctor",
+    description="List values for one Doctor Loki stream label (e.g. label='level' returns error/info/warn; label='guardian_partition' returns doctor/guardian-configs/monofs).",
+    parameters={
+        "label": "Label name (required), e.g. level, guardian_partition, guardian_component, guardian_asset, service",
+        "start": "Start time (optional)",
+        "end": "End time (optional)",
+    },
+    status_prefix="Listing Doctor log label values",
+    handler=_tool_doctor_logql_label_values,
+))
+
+
+async def _tool_doctor_traceql_query(args: dict) -> str:
+    query = str(args.get("query", "")).strip()
+    limit = _to_int(args.get("limit"), default=20, minimum=1, maximum=100)
+    spans_per_trace = _to_int(args.get("spans_per_trace"), default=0, minimum=0, maximum=100)
+    params = [f"limit={limit}"]
+    if query:
+        params.append(f"q={quote_plus(query)}")
+    if spans_per_trace:
+        params.append(f"spss={spans_per_trace}")
+    start = str(args.get("start", "")).strip()
+    end = str(args.get("end", "")).strip()
+    if start:
+        params.append(f"start={quote_plus(start)}")
+    if end:
+        params.append(f"end={quote_plus(end)}")
+    try:
+        raw = await _doctor_get(f"/api/search?{'&'.join(params)}")
+        return _compact_tempo_search(raw, max_traces=limit)
+    except Exception as e:
+        logger.warning("doctor_traceql_query failed: %s", e)
+        return f"Doctor TraceQL query failed: {e}"
+
+
+register(Skill(
+    name="doctor_traceql_query", category="doctor",
+    description="Search traces with native Tempo TraceQL (Tempo /api/search). Supports TraceQL selectors like '{ status = \"error\" }', '{ status = STATUS_CODE_ERROR }', '{ resource.service.name = \"monofs-router\" }', duration filters, and tag matchers. Discover tags with doctor_traceql_tags. Use for trace-level queries beyond the recent-traces summary.",
+    parameters={
+        "query": "TraceQL query, e.g. '{ status = error }' or '{ resource.service.name = \"monofs-router\" }'",
+        "start": "Start time (RFC3339 or Unix timestamp; default 1h ago)",
+        "end": "End time (RFC3339 or Unix timestamp; default now)",
+        "limit": "Max traces (default 20, max 100)",
+        "spans_per_trace": "Include up to N matched spans per trace (default 0)",
+    },
+    status_prefix="Querying Doctor TraceQL",
+    handler=_tool_doctor_traceql_query,
+))
+
+
+async def _tool_doctor_traceql_tags(args: dict) -> str:
+    params = []
+    start = str(args.get("start", "")).strip()
+    end = str(args.get("end", "")).strip()
+    if start:
+        params.append(f"start={quote_plus(start)}")
+    if end:
+        params.append(f"end={quote_plus(end)}")
+    path = "/api/search/tags"
+    if params:
+        path += "?" + "&".join(params)
+    try:
+        return _truncate(await _doctor_get(path), 12000)
+    except Exception as e:
+        logger.warning("doctor_traceql_tags failed: %s", e)
+        return f"Doctor TraceQL tag query failed: {e}"
+
+
+register(Skill(
+    name="doctor_traceql_tags", category="doctor",
+    description="List Tempo TraceQL tag names available in Doctor. Use before writing a TraceQL selector if you are unsure which attributes exist.",
+    parameters={
+        "start": "Start time (optional; default 1h ago)",
+        "end": "End time (optional; default now)",
+    },
+    status_prefix="Listing Doctor TraceQL tags",
+    handler=_tool_doctor_traceql_tags,
+))
+
+
+def _compact_traceql_metrics(raw: str, max_series: int = 100) -> str:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return _truncate(raw)
+    series = payload.get("series") if isinstance(payload, dict) else None
+    if not isinstance(series, list):
+        return _truncate(raw)
+    compact = []
+    for item in series[:max_series]:
+        if not isinstance(item, dict):
+            continue
+        labels = {
+            label.get("key"): label.get("value")
+            for label in (item.get("labels") or [])
+            if isinstance(label, dict) and label.get("key")
+        }
+        samples = item.get("samples") or []
+        compact.append(
+            {
+                "labels": labels,
+                "points": len(samples),
+                "last": samples[-1] if samples else None,
+                "first": samples[0] if samples else None,
+            }
+        )
+    return json.dumps({"series": len(series), "returned": len(compact), "results": compact}, indent=2)
+
+
+async def _tool_doctor_traceql_metrics(args: dict) -> str:
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return "Error: TraceQL metrics query is required (e.g. '{ status = error } | count_over_time()')"
+    params = [f"q={quote_plus(query)}"]
+    start = str(args.get("start", "")).strip()
+    end = str(args.get("end", "")).strip()
+    step = str(args.get("step", "")).strip()
+    if start:
+        params.append(f"start={quote_plus(start)}")
+    if end:
+        params.append(f"end={quote_plus(end)}")
+    if step:
+        params.append(f"step={quote_plus(step)}")
+    try:
+        raw = await _doctor_get(f"/api/metrics/query_range?{'&'.join(params)}")
+        return _compact_traceql_metrics(raw)
+    except Exception as e:
+        logger.warning("doctor_traceql_metrics failed: %s", e)
+        return f"Doctor TraceQL metrics query failed: {e}"
+
+
+register(Skill(
+    name="doctor_traceql_metrics", category="doctor",
+    description="Run a Tempo TraceQL metrics query (Tempo /api/metrics/query_range). Use for span-derived metrics such as count_over_time, rate, quantile_over_time grouped by service/status.",
+    parameters={
+        "query": "TraceQL metrics query, e.g. '{ status = error } | count_over_time() by (resource.service.name)'",
+        "start": "Start time (optional; default 1h ago)",
+        "end": "End time (optional; default now)",
+        "step": "Resolution step, e.g. 30s (optional)",
+    },
+    status_prefix="Querying Doctor TraceQL metrics",
+    handler=_tool_doctor_traceql_metrics,
+))
+
+
+# ---------------------------------------------------------------------------
+
+_METRIC_LABEL_KEYS = (
+    "__name__",
+    "guardian_partition",
+    "guardian_intent",
+    "guardian_asset",
+    "guardian_component",
+    "k8s_pod_name",
+    "k8s_namespace_name",
+    "k8s_node_name",
+    "node",
+    "component",
+    "job",
+    "instance",
+    "pod",
+    "namespace",
+)
+
+
+def _compact_metric_payload(raw: str, max_series: int = 100) -> str:
+    """Drop telemetry-resource noise from a Prometheus response.
+
+    Without this, one series carries a dozen service/SDK labels and the tool
+    result hits the truncation limit before the interesting values appear.
+    """
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return _truncate(raw)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return _truncate(raw)
+    result = data.get("result")
+    if not isinstance(result, list):
+        return _truncate(raw)
+
+    compact = []
+    for series in result[:max_series]:
+        if not isinstance(series, dict):
+            continue
+        metric = series.get("metric") or {}
+        labels = {
+            key: metric[key]
+            for key in _METRIC_LABEL_KEYS
+            if key in metric and metric[key] not in (None, "")
+        }
+        entry = {"labels": labels}
+        if "value" in series:
+            entry["value"] = series["value"]
+        elif "values" in series:
+            values = series.get("values") or []
+            entry["points"] = len(values)
+            entry["last"] = values[-1] if values else None
+            entry["first"] = values[0] if values else None
+        compact.append(entry)
+
+    out = {
+        "result_type": data.get("resultType", ""),
+        "series": len(result),
+        "returned": len(compact),
+        "results": compact,
+    }
+    return _truncate(json.dumps(out, indent=2), 20000)
+
 
 async def _tool_doctor_metrics_query(args: dict) -> str:
     promql = args.get("promql", "")
     if not promql:
         return "Error: promql query is required"
+    compact = _to_bool(args.get("compact"), default=True)
     params = [f"query={quote_plus(str(promql))}"]
     step = args.get("step", "15s")
     params.append(f"step={quote_plus(str(step))}")
@@ -1124,19 +1699,20 @@ async def _tool_doctor_metrics_query(args: dict) -> str:
         path = "query"
     try:
         data = await _doctor_get(f"/api/v1/{path}?{'&'.join(params)}")
-        return _truncate(data)
+        return _compact_metric_payload(data) if compact else _truncate(data)
     except Exception as e:
         logger.warning("doctor_metrics_query failed: %s", e)
         return f"Doctor metrics query failed: {e}"
 
 register(Skill(
     name="doctor_metrics_query", category="doctor",
-    description="Query metrics using PromQL. Returns time-series data. Use for CPU, memory, error rates, latency, request counts.",
+    description="Query metrics using PromQL. Returns compacted time-series data (labels and values) so the result fits in context. Use for CPU, memory, error rates, latency, request counts. Discover names with doctor_metrics_names first if unsure.",
     parameters={
         "promql": "PromQL query (e.g. 'rate(http_requests_total[5m])')",
         "start": "Start time (RFC3339, optional—omit for instant query)",
         "end": "End time (RFC3339, optional)",
         "step": "Resolution step (default 15s)",
+        "compact": "Drop resource/SDK labels and summarize (default true)",
     },
     status_prefix="Querying Doctor metrics",
     handler=_tool_doctor_metrics_query,
@@ -1144,12 +1720,123 @@ register(Skill(
 
 # ---------------------------------------------------------------------------
 
+def _span_is_error(span: dict) -> bool:
+    code = str(span.get("status_code") or "").upper()
+    if "ERROR" in code:
+        return True
+    attrs = span.get("attributes") or {}
+    rpc_code = str(
+        attrs.get("rpc.response.status_code")
+        or attrs.get("rpc_response_status_code")
+        or ""
+    ).upper()
+    if rpc_code and rpc_code not in {"OK", "0"}:
+        return True
+    http_code = attrs.get("http.status_code") or attrs.get("http_status_code")
+    try:
+        if http_code is not None and int(http_code) >= 500:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+async def _trace_status_summary(trace_id: str, tenant: str = "default") -> dict:
+    """Fetch a trace and summarize span statuses without dumping every span."""
+    if not trace_id:
+        return {}
+    try:
+        raw = await _doctor_get(f"/v1/traces/{trace_id}?tenant={quote_plus(tenant)}")
+        payload = json.loads(raw)
+    except Exception as exc:
+        return {"detail_error": str(exc)}
+    spans = payload.get("spans") or []
+    if not isinstance(spans, list):
+        return {"detail_error": "trace detail had no spans list"}
+    statuses = Counter(str(span.get("status_code") or "UNSET") for span in spans)
+    error_spans = []
+    for span in spans:
+        if _span_is_error(span):
+            error_spans.append(
+                {
+                    "name": span.get("name"),
+                    "service": span.get("service"),
+                    "status_code": span.get("status_code"),
+                }
+            )
+    return {
+        "span_count": len(spans),
+        "span_status": dict(statuses),
+        "error_count": len(error_spans),
+        "error_spans": error_spans[:5],
+    }
+
+
+async def _tool_doctor_metrics_names(args: dict) -> str:
+    search = str(args.get("search", "")).strip().lower()
+    limit = _to_int(args.get("limit"), default=200, minimum=1, maximum=1000)
+    try:
+        raw = await _doctor_get("/api/v1/label/__name__/values")
+        payload = json.loads(raw)
+    except Exception as e:
+        logger.warning("doctor_metrics_names failed: %s", e)
+        return f"Doctor metric-name query failed: {e}"
+    names = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(names, list):
+        return _truncate(raw)
+    if search:
+        names = [name for name in names if search in str(name).lower()]
+    names = sorted(str(name) for name in names)
+    return json.dumps(
+        {"search": search, "count": len(names), "metric_names": names[:limit]},
+        indent=2,
+    )
+
+
+register(Skill(
+    name="doctor_metrics_names", category="doctor",
+    description="List metric names available in Doctor (Prometheus label __name__), optionally filtered by substring. Call this before guessing a PromQL metric name. Use doctor_metrics_query afterwards with a real metric.",
+    parameters={
+        "search": "Optional substring filter, e.g. cpu, memory, container, http",
+        "limit": "Max names to return (default 200, max 1000)",
+    },
+    status_prefix="Listing Doctor metric names",
+    handler=_tool_doctor_metrics_names,
+))
+
+
+async def _tool_doctor_metrics_labels(args: dict) -> str:
+    match = str(args.get("match", "")).strip()
+    params = []
+    if match:
+        params.append(f"match[]={quote_plus(match)}")
+    path = "/api/v1/labels"
+    if params:
+        path += "?" + "&".join(params)
+    try:
+        return _truncate(await _doctor_get(path))
+    except Exception as e:
+        logger.warning("doctor_metrics_labels failed: %s", e)
+        return f"Doctor metric-label query failed: {e}"
+
+
+register(Skill(
+    name="doctor_metrics_labels", category="doctor",
+    description="List label names for Doctor metrics, optionally scoped to a series match (e.g. match='container_cpu_usage_seconds_total'). Use to discover partition/node labels before writing a PromQL filter.",
+    parameters={"match": "Optional PromQL series selector, e.g. up{guardian_partition=\"monofs\"}"},
+    status_prefix="Listing Doctor metric labels",
+    handler=_tool_doctor_metrics_labels,
+))
+
+
 async def _tool_doctor_traces_recent(args: dict) -> str:
     service = args.get("service", "")
     partition = args.get("partition", "")
     from_ts = args.get("from", "")
     to_ts = args.get("to", "")
     limit = _to_int(args.get("limit"), default=20, minimum=1, maximum=50)
+    include_status = _to_bool(args.get("include_span_status"), default=True)
+    errors_only = _to_bool(args.get("errors_only"), default=False)
     params = [f"tenant=default", f"limit={min(limit, 50)}"]
     if partition:
         params.append(f"partition={quote_plus(str(partition))}")
@@ -1161,20 +1848,65 @@ async def _tool_doctor_traces_recent(args: dict) -> str:
         params.append(f"to={quote_plus(str(to_ts))}")
     try:
         data = await _doctor_get(f"/v1/traces/recent?{'&'.join(params)}")
-        return _truncate(data)
     except Exception as e:
         logger.warning("doctor_traces_recent failed: %s", e)
         return f"Doctor traces query failed: {e}"
 
+    if not include_status:
+        return _truncate(data)
+
+    # The recent-traces endpoint only returns summary metadata; it does not
+    # expose span status. Enrich the first few traces so "are there errors?"
+    # can be answered from one tool call instead of a second guessing game.
+    try:
+        payload = json.loads(data)
+    except (TypeError, ValueError):
+        return _truncate(data)
+    traces = payload.get("traces") if isinstance(payload, dict) else None
+    if not isinstance(traces, list):
+        return _truncate(data)
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def enrich(trace: dict) -> None:
+        async with semaphore:
+            summary = await _trace_status_summary(str(trace.get("trace_id") or ""))
+            trace.update(summary)
+
+    await asyncio.gather(*(enrich(t) for t in traces if isinstance(t, dict)))
+
+    # Put error traces first and surface a top-level count. The response is
+    # often large enough to hit the tool truncation limit; the summary and the
+    # interesting traces must survive that cut.
+    traces.sort(key=lambda trace: int(trace.get("error_count") or 0), reverse=True)
+    scanned = len(traces)
+    total_error_spans = sum(int(t.get("error_count") or 0) for t in traces)
+    traces_with_errors = sum(1 for t in traces if t.get("error_count"))
+    if errors_only:
+        traces = [trace for trace in traces if trace.get("error_count")]
+    out = {
+        "scanned": scanned,
+        "returned": len(traces),
+        "errors_only": errors_only,
+        "error_summary": {
+            "traces_with_errors": traces_with_errors,
+            "error_spans": total_error_spans,
+        },
+        "traces": traces,
+    }
+    return _truncate(json.dumps(out, indent=2), 20000)
+
 register(Skill(
     name="doctor_traces_recent", category="doctor",
-    description="Get recent trace summaries from Doctor. Shows trace IDs, services, durations. Filter by partition, service, and time range. Use to find slow or failing requests.",
+    description="Get recent trace summaries from Doctor with span-status/error enrichment. Shows trace IDs, services, durations, span status counts, and error spans, plus `scanned` and `error_summary`. `errors_only` filters the trace list but still reports how many were scanned. Use this to answer whether traces contain errors.",
     parameters={
         "partition": "Guardian partition to filter (optional, e.g. agent)",
         "service": "Service name filter (optional)",
         "from": "Start time RFC3339 (optional)",
         "to": "End time RFC3339 (optional)",
         "limit": "Max traces (default 20, max 50)",
+        "include_span_status": "Fetch span status/error details for each trace (default true)",
+        "errors_only": "Return only traces that contain error spans (default false)",
     },
     status_prefix="Querying Doctor traces",
     handler=_tool_doctor_traces_recent,
