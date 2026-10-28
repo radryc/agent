@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     opencode_system_prompt: str = ""
 
     otel_exporter_otlp_endpoint: str = ""
-    otel_service_name: str = "lagent-backend"
+    otel_service_name: str = "agent.agent.lagent-backend"
     otel_enabled: bool = False
     otel_exporter_otlp_insecure: bool = True
     otel_metric_export_interval_ms: int = 15000
