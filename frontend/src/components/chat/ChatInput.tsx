@@ -57,7 +57,8 @@ export default function ChatInput() {
         <button
           onClick={handleSend}
           disabled={isStreaming || !text.trim()}
-          className="shrink-0 rounded-xl bg-accent-blue p-3 text-white hover:bg-accent-blue/80 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          aria-label="Send message"
+          className="shrink-0 rounded-xl bg-accent-blue p-3 text-[var(--strata-accent-contrast)] hover:bg-accent-blue/80 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
           <Send size={18} />
         </button>

@@ -1997,6 +1997,95 @@ register(Skill(
 ))
 
 # ---------------------------------------------------------------------------
+# --- NIGHTWATCH TOOLS ---
+# ---------------------------------------------------------------------------
+
+async def _nightwatch_get(path: str, params: dict | None = None) -> str:
+    if not settings.nightwatch_url:
+        return "Nightwatch is not configured (NIGHTWATCH_URL is empty)."
+    headers = {}
+    if settings.nightwatch_proxy_token:
+        headers["X-Nightwatch-Token"] = settings.nightwatch_proxy_token
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0), headers=headers) as client:
+            response = await client.get(
+                f"{settings.nightwatch_url.rstrip('/')}{path}", params=params or {}
+            )
+            response.raise_for_status()
+            return _truncate(response.text, 16000)
+    except Exception as exc:
+        logger.warning("nightwatch_get(%s) failed: %s", path, exc)
+        return f"Nightwatch request failed: {exc}"
+
+
+async def _tool_nightwatch_overview(_args: dict) -> str:
+    return await _nightwatch_get("/v1/overview")
+
+register(Skill(
+    name="nightwatch_overview", category="nightwatch",
+    description="Show Nightwatch shadow-mode status: enabled assignments, open/investigating incidents, handoffs, escalations, and last poll. Use when the user asks what the background SRE agent is doing.",
+    parameters={},
+    status_prefix="Reading Nightwatch overview",
+    handler=_tool_nightwatch_overview,
+))
+
+async def _tool_nightwatch_incidents(args: dict) -> str:
+    params = {}
+    if args.get("status"):
+        params["status"] = str(args["status"])
+    if args.get("partition"):
+        params["partition"] = str(args["partition"])
+    params["limit"] = _to_int(args.get("limit"), default=20, minimum=1, maximum=100)
+    return await _nightwatch_get("/v1/incidents", params)
+
+register(Skill(
+    name="nightwatch_incidents", category="nightwatch",
+    description="List Nightwatch incidents. Each incident includes status, severity, root-cause candidate, confidence, handoff/escalation state, and recommended action (recommendation only in shadow mode).",
+    parameters={
+        "status": "Optional status filter (open, investigating, resolved, failed)",
+        "partition": "Optional partition filter",
+        "limit": "Max incidents (default 20, max 100)",
+    },
+    status_prefix="Listing Nightwatch incidents",
+    handler=_tool_nightwatch_incidents,
+))
+
+async def _tool_nightwatch_incident_detail(args: dict) -> str:
+    incident_id = str(args.get("incident_id", "")).strip()
+    if not incident_id:
+        return "Error: incident_id is required"
+    return await _nightwatch_get(f"/v1/incidents/{quote_plus(incident_id)}")
+
+register(Skill(
+    name="nightwatch_incident_detail", category="nightwatch",
+    description="Get a Nightwatch incident with alerts, timeline events, evidence, and findings. Use to explain why Nightwatch made a recommendation or escalated.",
+    parameters={"incident_id": "Incident ID from nightwatch_incidents"},
+    status_prefix="Reading Nightwatch incident",
+    handler=_tool_nightwatch_incident_detail,
+))
+
+async def _tool_nightwatch_activity(args: dict) -> str:
+    params = {}
+    if args.get("since"):
+        params["since"] = str(args["since"])
+    if args.get("partition"):
+        params["partition"] = str(args["partition"])
+    params["limit"] = _to_int(args.get("limit"), default=50, minimum=1, maximum=200)
+    return await _nightwatch_get("/v1/activity", params)
+
+register(Skill(
+    name="nightwatch_activity", category="nightwatch",
+    description="Show the Nightwatch activity ledger: what the background agent observed, investigated, handed off, or escalated. Use when the user asks what happened while they were away.",
+    parameters={
+        "since": "Optional ISO timestamp lower bound",
+        "partition": "Optional partition filter",
+        "limit": "Max events (default 50, max 200)",
+    },
+    status_prefix="Reading Nightwatch activity",
+    handler=_tool_nightwatch_activity,
+))
+
+# ---------------------------------------------------------------------------
 # --- MONOFS TOOLS ---
 # ---------------------------------------------------------------------------
 

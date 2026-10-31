@@ -12,7 +12,7 @@ _tracer_provider = None
 _meter_provider = None
 
 
-def init_telemetry() -> None:
+def init_telemetry(component: str = "lagent-backend") -> None:
     global _initialized, _tracer_provider, _meter_provider
     if _initialized or not settings.otel_enabled:
         logger.info("OTEL disabled, skipping telemetry init")
@@ -35,7 +35,7 @@ def init_telemetry() -> None:
         resource = Resource.create(
             {
                 "service.name": settings.otel_service_name,
-                "guardian.component": "lagent-backend",
+                "guardian.component": component,
             }
         )
 
