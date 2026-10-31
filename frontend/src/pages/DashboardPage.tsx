@@ -28,6 +28,7 @@ import {
   Image,
 } from "lucide-react";
 import { api } from "../api/client";
+import { statusLabel, statusToken } from "../lib/status";
 
 type OverviewSummary = {
   partitions: number;
@@ -65,17 +66,8 @@ type Overview = {
   partitions: PartitionSummary[];
 };
 
-const HEALTH_GREEN = "#22c55e";
-const HEALTH_AMBER = "#f59e0b";
-const HEALTH_RED = "#ef4444";
-const HEALTH_GRAY = "#475569";
-
 function healthColor(health: string): string {
-  const h = health.toLowerCase();
-  if (h === "healthy") return HEALTH_GREEN;
-  if (h === "attention" || h === "degraded") return HEALTH_AMBER;
-  if (h === "failing" || h === "failed" || h === "error") return HEALTH_RED;
-  return HEALTH_GRAY;
+  return `var(${statusToken(health)})`;
 }
 
 function StatusBadge({ health }: { health: string }) {
@@ -83,13 +75,16 @@ function StatusBadge({ health }: { health: string }) {
   return (
     <span
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium"
-      style={{ backgroundColor: `${color}22`, color }}
+      style={{
+        backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`,
+        color,
+      }}
     >
       <span
         className="w-1.5 h-1.5 rounded-full"
         style={{ backgroundColor: color }}
       />
-      {health}
+      {statusLabel(health)}
     </span>
   );
 }
@@ -121,7 +116,11 @@ function StatCard({
   );
 }
 
-const PIE_COLORS = [HEALTH_GREEN, HEALTH_AMBER, HEALTH_RED];
+const PIE_COLORS = [
+  "var(--strata-healthy)",
+  "var(--strata-warning)",
+  "var(--strata-critical)",
+];
 
 export default function DashboardPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -378,9 +377,9 @@ export default function DashboardPage() {
                       payload?.[0]?.payload?.fullName ?? label
                     }
                   />
-                  <Bar dataKey="Healthy" fill={HEALTH_GREEN} radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="Attention" fill={HEALTH_AMBER} radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="Failing" fill={HEALTH_RED} radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="Healthy" fill="var(--strata-healthy)" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="Attention" fill="var(--strata-warning)" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="Failing" fill="var(--strata-critical)" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (

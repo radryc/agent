@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Outage Otto — SRE Assistant</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("strata.theme") || localStorage.getItem("agent.theme");
+          if (!theme) theme = "system";
+          var resolved = theme;
+          if (theme === "system") {
+            resolved = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "daylight"
+              : "midnight";
+          }
+          document.documentElement.setAttribute("data-theme", resolved);
+          document.documentElement.dataset.themePreference = theme;
+        } catch (e) { /* localStorage unavailable */ }
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/lagent.svg" />
   </head>
   <body class="bg-dark-900 text-gray-100 antialiased">

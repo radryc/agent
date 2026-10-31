@@ -2,10 +2,11 @@ import { useEffect, useRef } from "react";
 import { useChatStore } from "../../stores/chatStore";
 import MessageBubble from "./MessageBubble";
 import AgentAvatar from "./AgentAvatar";
-import { Sparkles } from "lucide-react";
+import { Sparkles, TriangleAlert } from "lucide-react";
 
 export default function ChatMessages() {
-  const { messages, isStreaming, streamContent, streamPersona, activePersona } = useChatStore();
+  const { messages, isStreaming, streamContent, streamPersona, streamError, activePersona } =
+    useChatStore();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -83,6 +84,21 @@ export default function ChatMessages() {
           {streamPersona && (
             <span className="text-xs text-gray-500">{streamingName} is on it…</span>
           )}
+        </div>
+      )}
+
+      {streamError && (
+        <div
+          role="alert"
+          className="ml-11 flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200"
+        >
+          <TriangleAlert size={16} className="mt-0.5 shrink-0 text-red-400" />
+          <div className="min-w-0">
+            <div className="font-medium text-red-300">The agent could not finish this response</div>
+            <div className="mt-1 whitespace-pre-wrap break-words text-xs text-red-200/80">
+              {streamError}
+            </div>
+          </div>
         </div>
       )}
 

@@ -3,6 +3,7 @@ import { useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AgentAvatar, { type AvatarPersona } from "./AgentAvatar";
+import CodeBlock from "./CodeBlock";
 import type { Message } from "../../types";
 
 interface MessageBubbleProps {
@@ -52,6 +53,7 @@ const markdownComponents: Components = {
       </a>
     );
   },
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   img: ({ src, alt }) => (
     <img
       src={typeof src === "string" ? src : ""}
