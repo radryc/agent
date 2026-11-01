@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useChatStore } from "../../stores/chatStore";
 import AgentSwitch from "./AgentSwitch";
 import AgentAvatar from "../chat/AgentAvatar";
-import { Plus, Trash2, Settings, MessageSquare, X, Pencil } from "lucide-react";
+import { Plus, Trash2, Settings, MessageSquare, Moon, X, Pencil } from "lucide-react";
 import type { PersonaType } from "../../types";
 
 interface SidebarProps {
@@ -66,7 +66,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
   };
 
   return (
-    <div className="flex flex-col h-full bg-dark-800 border-r border-dark-600">
+    <aside aria-label="Sessions" className="flex flex-col h-full bg-dark-800 border-r border-dark-600">
       {/* Header */}
       <div className="flex items-center gap-3 p-4 border-b border-dark-600">
         <AgentAvatar size="sm" still persona={HEADERS[activePersona].avatar} />
@@ -91,6 +91,27 @@ export default function Sidebar({ onClose }: SidebarProps) {
         <AgentSwitch value={activePersona} onChange={handleAgentChange} />
       </div>
 
+      {/* Nightwatch */}
+      <div className="px-3 pb-2">
+        <button
+          onClick={() => {
+            navigate("/nightwatch");
+            onClose();
+          }}
+          className={`flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm transition-colors ${
+            location.pathname.startsWith("/nightwatch")
+              ? "bg-dark-600 text-gray-100"
+              : "text-gray-400 hover:bg-dark-700 hover:text-gray-200"
+          }`}
+        >
+          <Moon size={14} />
+          <span className="flex-1 text-left">Nightwatch</span>
+          <span className="rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-300">
+            shadow
+          </span>
+        </button>
+      </div>
+
       {/* New Chat */}
       <div className="px-3 pb-2">
         <button
@@ -112,26 +133,22 @@ export default function Sidebar({ onClose }: SidebarProps) {
         {sessions.map((s) => (
           <div
             key={s.id}
-            onClick={() => handleSwitch(s.id)}
-            className={`group flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-left transition-colors cursor-pointer ${
+            className={`group flex items-center gap-1 w-full rounded-lg px-2 py-1.5 text-sm text-left transition-colors ${
               activeSessionId === s.id
                 ? "bg-dark-600 text-gray-100"
                 : "text-gray-400 hover:bg-dark-700 hover:text-gray-200"
             }`}
           >
-            <MessageSquare size={14} className="shrink-0" />
             {editingId === s.id ? (
               <input
-                className="flex-1 bg-dark-800 border border-accent-blue rounded px-1 py-0.5 text-xs text-gray-100 outline-none"
+                className="min-w-0 flex-1 rounded border border-accent-blue bg-dark-800 px-1.5 py-1 text-xs text-gray-100 outline-none"
                 value={editTitle}
                 onChange={(e) => setEditTitle(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
-                    e.stopPropagation();
                     renameSession(s.id, editTitle);
                     setEditingId(null);
                   } else if (e.key === "Escape") {
-                    e.stopPropagation();
                     setEditingId(null);
                   }
                 }}
@@ -141,38 +158,44 @@ export default function Sidebar({ onClose }: SidebarProps) {
                   }
                   setEditingId(null);
                 }}
-                onClick={(e) => e.stopPropagation()}
                 autoFocus
               />
             ) : (
-              <span
-                className="flex-1 truncate"
-                onDoubleClick={(e) => {
-                  e.stopPropagation();
+              <button
+                type="button"
+                onClick={() => handleSwitch(s.id)}
+                onDoubleClick={() => {
                   setEditingId(s.id);
                   setEditTitle(s.title);
                 }}
+                className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left"
+                aria-current={activeSessionId === s.id ? "page" : undefined}
               >
-                {s.title}
-              </span>
+                <MessageSquare size={14} className="shrink-0" />
+                <span className="truncate">{s.title}</span>
+              </button>
             )}
-            <span
-              onClick={(e) => {
-                e.stopPropagation();
+            <button
+              type="button"
+              className="rounded p-1.5 opacity-0 transition-opacity hover:bg-dark-500 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+              title="Rename"
+              aria-label={`Rename ${s.title}`}
+              onClick={() => {
                 setEditingId(s.id);
                 setEditTitle(s.title);
               }}
-              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-dark-500 transition-opacity"
-              title="Rename"
             >
               <Pencil size={12} />
-            </span>
-            <span
+            </button>
+            <button
+              type="button"
+              className="rounded p-1.5 opacity-0 transition-opacity hover:bg-dark-500 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+              title="Delete"
+              aria-label={`Delete ${s.title}`}
               onClick={(e) => handleDelete(e, s.id)}
-              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-dark-500 transition-opacity"
             >
               <Trash2 size={12} />
-            </span>
+            </button>
           </div>
         ))}
       </div>
@@ -194,6 +217,6 @@ export default function Sidebar({ onClose }: SidebarProps) {
           Settings
         </button>
       </div>
-    </div>
+    </aside>
   );
 }

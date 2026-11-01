@@ -1,22 +1,127 @@
 @import "tailwindcss";
+@import "./design/tokens.css";
+@import "./design/ui.css";
 
-/* === Dark Theme (inspired by lolipop) === */
-@theme {
-  --color-dark-900: #0a0a0f;
-  --color-dark-800: #12121a;
-  --color-dark-700: #1a1a25;
-  --color-dark-600: #252533;
-  --color-dark-500: #32324a;
-  --color-accent-blue: #3b82f6;
-  --color-accent-purple: #9333ea;
-  --color-accent-cyan: #06b6d4;
-  --color-accent-green: #22c55e;
+@font-face {
+  font-family: "Manrope";
+  src: url("/fonts/manrope-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/fonts/space-grotesk-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrains-mono-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+}
+
+@theme inline {
+  --font-sans: var(--strata-font-ui);
+  --font-display: var(--strata-font-display);
+  --font-mono: var(--strata-font-mono);
+
+  --color-dark-900: var(--strata-bg);
+  --color-dark-800: var(--strata-panel);
+  --color-dark-700: var(--strata-elevated);
+  --color-dark-600: var(--strata-overlay);
+  --color-dark-500: var(--strata-border-strong);
+
+  --color-slate-50: var(--strata-text);
+  --color-slate-100: var(--strata-text);
+  --color-slate-200: var(--strata-text);
+  --color-slate-300: var(--strata-text-secondary);
+  --color-slate-400: var(--strata-text-secondary);
+  --color-slate-500: var(--strata-text-tertiary);
+  --color-slate-600: var(--strata-text-tertiary);
+  --color-slate-700: var(--strata-border);
+  --color-slate-800: var(--strata-elevated);
+  --color-slate-900: var(--strata-panel);
+  --color-slate-950: var(--strata-bg);
+
+  --color-gray-50: var(--strata-text);
+  --color-gray-100: var(--strata-text);
+  --color-gray-200: var(--strata-text);
+  --color-gray-300: var(--strata-text-secondary);
+  --color-gray-400: var(--strata-text-secondary);
+  --color-gray-500: var(--strata-text-tertiary);
+  --color-gray-600: var(--strata-text-tertiary);
+  --color-gray-700: var(--strata-border);
+  --color-gray-800: var(--strata-elevated);
+  --color-gray-900: var(--strata-panel);
+  --color-gray-950: var(--strata-bg);
+
+  --color-violet-200: var(--strata-accent);
+  --color-violet-300: var(--strata-accent);
+  --color-violet-400: var(--strata-accent);
+  --color-violet-500: var(--strata-accent);
+  --color-violet-600: var(--strata-accent-strong);
+  --color-violet-700: var(--strata-accent-strong);
+  --color-sky-200: var(--strata-accent);
+  --color-sky-300: var(--strata-accent);
+  --color-sky-400: var(--strata-accent);
+  --color-sky-500: var(--strata-accent);
+  --color-sky-600: var(--strata-accent-strong);
+  --color-sky-700: var(--strata-accent-strong);
+  --color-cyan-300: var(--strata-accent);
+  --color-cyan-400: var(--strata-accent);
+  --color-cyan-500: var(--strata-accent);
+  --color-cyan-600: var(--strata-accent-strong);
+  --color-blue-300: var(--strata-accent);
+  --color-blue-400: var(--strata-accent);
+  --color-blue-500: var(--strata-accent);
+  --color-blue-600: var(--strata-accent-strong);
+  --color-purple-300: var(--strata-ai);
+  --color-purple-400: var(--strata-ai);
+  --color-purple-500: var(--strata-ai);
+  --color-purple-600: var(--strata-ai);
+  --color-pink-400: var(--strata-ai);
+  --color-pink-500: var(--strata-ai);
+  --color-emerald-300: var(--strata-healthy);
+  --color-emerald-400: var(--strata-healthy);
+  --color-emerald-500: var(--strata-healthy);
+  --color-green-300: var(--strata-healthy);
+  --color-green-400: var(--strata-healthy);
+  --color-green-500: var(--strata-healthy);
+  --color-amber-300: var(--strata-warning);
+  --color-amber-400: var(--strata-warning);
+  --color-amber-500: var(--strata-warning);
+  --color-rose-300: var(--strata-critical);
+  --color-rose-400: var(--strata-critical);
+  --color-rose-500: var(--strata-critical);
+  --color-red-300: var(--strata-critical);
+  --color-red-400: var(--strata-critical);
+  --color-red-500: var(--strata-critical);
+
+  --color-accent-blue: var(--strata-accent);
+  --color-accent-purple: var(--strata-ai);
+  --color-accent-cyan: var(--strata-accent);
+  --color-accent-green: var(--strata-healthy);
 }
 
 /* === Global === */
 body {
-  background-color: var(--color-dark-900);
-  color: #e2e8f0;
+  background-color: var(--strata-bg);
+  color: var(--strata-text);
+  font-family: var(--strata-font-ui);
+  font-size: var(--strata-text-base);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+:where(button, input, select, textarea, a):focus-visible {
+  outline: 2px solid var(--strata-focus-ring);
+  outline-offset: 2px;
 }
 
 /* === Scrollbar === */
@@ -27,11 +132,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-dark-500);
+  background: var(--strata-border-strong);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-accent-blue);
+  background: var(--strata-accent);
 }
 
 /* === Custom Animations === */
@@ -48,10 +153,10 @@ body {
 
 @keyframes glow-pulse {
   0%, 100% {
-    box-shadow: 0 0 8px 2px rgba(59, 130, 246, 0.3);
+    box-shadow: 0 0 8px 2px color-mix(in oklab, var(--strata-accent) 30%, transparent);
   }
   50% {
-    box-shadow: 0 0 20px 6px rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 20px 6px color-mix(in oklab, var(--strata-accent) 50%, transparent);
   }
 }
 
@@ -83,9 +188,9 @@ body {
 
 /* === Glassmorphism === */
 .glass {
-  background: rgba(18, 18, 26, 0.7);
+  background: color-mix(in oklab, var(--strata-panel) 82%, transparent);
   backdrop-filter: blur(16px);
-  border: 1px solid rgba(50, 50, 74, 0.4);
+  border: 1px solid var(--strata-border);
 }
 
 /* === Agent markdown === */
@@ -109,7 +214,7 @@ body {
 .md-content h4 {
   margin: 1rem 0 0.5rem;
   font-weight: 600;
-  color: #f1f5f9;
+  color: var(--strata-text);
 }
 
 .md-content h1 { font-size: 1.25rem; }
@@ -127,20 +232,20 @@ body {
 .md-content li { margin: 0.2rem 0; }
 
 .md-content code {
-  border: 1px solid rgba(71, 85, 105, 0.6);
+  border: 1px solid var(--strata-border-strong);
   border-radius: 0.3rem;
-  background: rgba(15, 23, 42, 0.9);
+  background: var(--strata-input);
   padding: 0.1rem 0.3rem;
   font-size: 0.85em;
-  color: #93c5fd;
+  color: var(--strata-accent);
 }
 
 .md-content pre {
   margin: 0.75rem 0;
   overflow-x: auto;
-  border: 1px solid #252533;
-  border-radius: 0.6rem;
-  background: #0b0b12;
+  border: 1px solid var(--strata-border);
+  border-radius: var(--strata-radius-sm);
+  background: var(--strata-bg);
   padding: 0.85rem 1rem;
 }
 
@@ -148,14 +253,14 @@ body {
   border: 0;
   background: transparent;
   padding: 0;
-  color: #e2e8f0;
+  color: var(--strata-text);
 }
 
 .md-content blockquote {
   margin: 0.75rem 0;
-  border-left: 3px solid rgba(59, 130, 246, 0.6);
+  border-left: 3px solid color-mix(in oklab, var(--strata-accent) 60%, transparent);
   padding-left: 0.85rem;
-  color: #94a3b8;
+  color: var(--strata-text-secondary);
 }
 
 .md-content table {
@@ -167,25 +272,25 @@ body {
 
 .md-content th,
 .md-content td {
-  border: 1px solid #32324a;
+  border: 1px solid var(--strata-border);
   padding: 0.4rem 0.55rem;
   text-align: left;
   vertical-align: top;
 }
 
 .md-content th {
-  background: #1a1a25;
-  color: #cbd5e1;
+  background: var(--strata-elevated);
+  color: var(--strata-text-secondary);
   font-weight: 600;
 }
 
 .md-content tr:nth-child(even) td {
-  background: rgba(26, 26, 37, 0.55);
+  background: color-mix(in oklab, var(--strata-panel) 55%, transparent);
 }
 
 .md-content hr {
   margin: 1rem 0;
-  border-color: #32324a;
+  border-color: var(--strata-border);
 }
 
 /* === xterm.js overrides === */
@@ -201,7 +306,7 @@ body {
 
 .xterm-viewport {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-dark-500) transparent;
+  scrollbar-color: var(--strata-border-strong) transparent;
 }
 
 .xterm-viewport::-webkit-scrollbar {
@@ -213,7 +318,7 @@ body {
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb {
-  background: var(--color-dark-500);
+  background: var(--strata-border-strong);
   border-radius: 3px;
 }
 

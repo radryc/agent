@@ -104,6 +104,27 @@ class Settings(BaseSettings):
         "http://k8s-svc-compute-k8s-main-doctor-doctor-query-query.doctor.svc.cluster.local:18080"
     )
 
+    # Nightwatch: headless shadow-mode SRE observer. The interactive backend
+    # only proxies read-only Nightwatch APIs; the worker runs in its own
+    # partition with the same image and a separate entrypoint.
+    nightwatch_url: str = ""
+    nightwatch_proxy_token: str = ""
+    nightwatch_enabled: bool = True
+    nightwatch_mode: str = "shadow"
+    nightwatch_poll_interval_seconds: int = 30
+    nightwatch_sentinel_url: str = ""
+    nightwatch_db_url: str = "sqlite+aiosqlite:////data/nightwatch.db"
+    nightwatch_tenant: str = "default"
+    nightwatch_correlation_window_minutes: int = 10
+    nightwatch_retention_days: int = 90
+    nightwatch_llm_enabled: bool = True
+    nightwatch_llm_profile: str = "local"
+    nightwatch_max_concurrent_investigations: int = 3
+    nightwatch_rca_queries_file: str = ""
+    nightwatch_assignment_label: str = "nightwatch.strata.io/enabled"
+    nightwatch_escalation_confidence: float = 0.5
+    nightwatch_escalation_after_minutes: int = 20
+
     model_config = {"env_prefix": "", "case_sensitive": False}
 
 

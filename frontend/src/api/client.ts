@@ -1,3 +1,12 @@
+import type {
+  NightwatchActivityResponse,
+  NightwatchAssignment,
+  NightwatchBrief,
+  NightwatchIncidentDetail,
+  NightwatchIncidentsResponse,
+  NightwatchOverview,
+} from "../types/nightwatch";
+
 export interface AgentSettings {
   system_prompt: string;
   llm_model: string;
@@ -251,4 +260,43 @@ export const api = {
       }>;
       active: string;
     }>("/api/agent/status"),
+
+  // Nightwatch (shadow-mode SRE observer)
+  nightwatchOverview: () =>
+    request<NightwatchOverview>("/api/nightwatch/overview"),
+
+  nightwatchBrief: (since?: string) =>
+    request<NightwatchBrief>(
+      `/api/nightwatch/brief${since ? `?since=${encodeURIComponent(since)}` : ""}`
+    ),
+
+  nightwatchAssignments: () =>
+    request<{ available: boolean; assignments: NightwatchAssignment[] }>(
+      "/api/nightwatch/assignments"
+    ),
+
+  nightwatchIncidents: (params?: { status?: string; partition?: string; limit?: number }) => {
+    const search = new URLSearchParams();
+    if (params?.status) search.set("status", params.status);
+    if (params?.partition) search.set("partition", params.partition);
+    if (params?.limit) search.set("limit", String(params.limit));
+    const query = search.toString();
+    return request<NightwatchIncidentsResponse>(
+      `/api/nightwatch/incidents${query ? `?${query}` : ""}`
+    );
+  },
+
+  nightwatchIncident: (id: string) =>
+    request<NightwatchIncidentDetail>(`/api/nightwatch/incidents/${encodeURIComponent(id)}`),
+
+  nightwatchActivity: (params?: { since?: string; partition?: string; limit?: number }) => {
+    const search = new URLSearchParams();
+    if (params?.since) search.set("since", params.since);
+    if (params?.partition) search.set("partition", params.partition);
+    if (params?.limit) search.set("limit", String(params.limit));
+    const query = search.toString();
+    return request<NightwatchActivityResponse>(
+      `/api/nightwatch/activity${query ? `?${query}` : ""}`
+    );
+  },
 };

@@ -9,6 +9,8 @@ interface ChatState {
   messages: Message[];
   isStreaming: boolean;
   streamContent: string;
+  /** Last stream failure, surfaced in the chat instead of silently dropping the turn. */
+  streamError: string | null;
   ws: ChatWebSocket | null;
   activeAgent: AgentType;
   activePersona: PersonaType;
@@ -46,6 +48,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
   streamContent: "",
+  streamError: null,
   ws: null,
   activeAgent: "local",
   activePersona: "auto",
@@ -94,14 +97,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
             messages: [...s.messages, assistantMsg],
             isStreaming: false,
             streamContent: "",
+            streamError: null,
           }));
         } else {
-          set({ isStreaming: false, streamContent: "" });
+          set({ isStreaming: false, streamContent: "", streamError: null });
         }
       }
 
       if (msg.type === "error") {
-        set({ isStreaming: false, streamContent: "", execOutput: "", streamPersona: null });
+        const detail = msg.data || "The agent request failed.";
+        console.error("[agent] stream error:", detail);
+        const partial = get().streamContent;
+        set((s) => ({
+          messages: partial
+            ? [
+                ...s.messages,
+                {
+                  id: crypto.randomUUID(),
+                  session_id: msg.session_id || s.activeSessionId || "",
+                  role: "assistant" as const,
+                  content: partial,
+                  persona: s.streamPersona,
+                  created_at: new Date().toISOString(),
+                },
+              ]
+            : s.messages,
+          isStreaming: false,
+          streamContent: "",
+          streamError: detail,
+          execOutput: "",
+          streamPersona: null,
+        }));
       }
 
       if (msg.type === "exec_output" && msg.data) {
@@ -147,10 +173,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const ws = new ChatWebSocket(handler, {
       onClose: () => {
+        const state = get();
+        if (state.isStreaming) {
+          const partial = state.streamContent;
+          set((s) => ({
+            messages: partial
+              ? [
+                  ...s.messages,
+                  {
+                    id: crypto.randomUUID(),
+                    session_id: s.activeSessionId || "",
+                    role: "assistant" as const,
+                    content: partial,
+                    persona: s.streamPersona,
+                    created_at: new Date().toISOString(),
+                  },
+                ]
+              : s.messages,
+            isStreaming: false,
+            streamContent: "",
+            streamError: "Connection to the agent was interrupted. Reconnecting…",
+            terminalConnected: false,
+          }));
+          return;
+        }
         set({ isStreaming: false, streamContent: "", terminalConnected: false });
       },
       onError: () => {
-        set({ isStreaming: false, streamContent: "", terminalConnected: false });
+        set((s) => ({
+          isStreaming: false,
+          streamContent: "",
+          streamError: s.isStreaming
+            ? "Could not reach the agent backend."
+            : s.streamError,
+          terminalConnected: false,
+        }));
       },
       onOpen: () => {
         if (get().mode === "terminal") {
@@ -181,7 +238,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   createSession: async () => {
     const session = await api.createSession();
     await get().loadSessions();
-    set({ activeSessionId: session.id, messages: [] });
+    set({ activeSessionId: session.id, messages: [], streamError: null });
     return session.id;
   },
 
@@ -201,6 +258,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages,
         isStreaming: false,
         streamContent: "",
+        streamError: null,
         streamPersona: null,
         streamEngine: null,
       });
@@ -216,7 +274,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await api.deleteSession(id);
     const state = get();
     if (state.activeSessionId === id) {
-      set({ activeSessionId: null, messages: [] });
+      set({ activeSessionId: null, messages: [], streamError: null });
     }
     await get().loadSessions();
   },
@@ -270,6 +328,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...s.messages, userMsg],
       isStreaming: true,
       streamContent: "",
+      streamError: null,
       streamPersona: null,
     }));
 

@@ -19,6 +19,7 @@ from app.api.auth import router as auth_router
 from app.api.guardian import router as guardian_router
 from app.api.media import router as media_router
 from app.api.agent import router as agent_router
+from app.api.nightwatch import router as nightwatch_router
 from app.terminal.exec import get_terminal_manager
 
 logging.basicConfig(
@@ -82,3 +83,4 @@ app.include_router(auth_router)
 app.include_router(guardian_router)
 app.include_router(media_router)
 app.include_router(agent_router)
+app.include_router(nightwatch_router)

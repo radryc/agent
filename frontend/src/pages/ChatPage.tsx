@@ -6,6 +6,8 @@ import Terminal, { type TerminalHandle } from "../components/terminal/Terminal";
 import ChatMessages from "../components/chat/ChatMessages";
 import ChatInput from "../components/chat/ChatInput";
 import SsoStatusButton from "../components/layout/SsoStatusButton";
+import ContextRail from "../components/chat/ContextRail";
+import NightwatchBanner from "../components/nightwatch/NightwatchBanner";
 
 const AGENT_PROMPTS: Record<string, string> = {
   local: "$ ",
@@ -168,8 +170,9 @@ export default function ChatPage() {
             autoFocus
           />
         ) : (
-          <span
-            className="text-gray-300 font-mono text-[11px] cursor-pointer hover:text-accent-blue transition-colors"
+          <button
+            type="button"
+            className="font-mono text-[11px] text-gray-300 transition-colors hover:text-accent-blue"
             title="Double-click to rename"
             onDoubleClick={() => {
               if (activeSessionId) {
@@ -179,7 +182,7 @@ export default function ChatPage() {
             }}
           >
             {activeSession?.title || activeSessionId?.slice(0, 8) || "..."}
-          </span>
+          </button>
         )}
         <span className="text-gray-700">|</span>
         <span className="text-gray-500">Persona</span>
@@ -189,13 +192,14 @@ export default function ChatPage() {
         )}
         <span className="text-gray-700">|</span>
         <span className="text-gray-500">Mode</span>
-        <span
-          className={`font-medium cursor-pointer ${mode === "terminal" ? "text-accent-green" : "text-accent-purple"}`}
+        <button
+          type="button"
+          className={`font-medium ${mode === "terminal" ? "text-accent-green" : "text-accent-purple"}`}
           onClick={() => setMode(mode === "terminal" ? "agent" : "terminal")}
           title="Ctrl+E to toggle"
         >
           {mode === "terminal" ? "Terminal" : "Agent"}
-        </span>
+        </button>
         <span className="text-gray-600 text-[10px]">Ctrl+E</span>
         {mode === "terminal" && (
           <>
@@ -221,10 +225,15 @@ export default function ChatPage() {
         </div>
       </div>
 
+      <NightwatchBanner />
+
       {mode === "agent" ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <ChatMessages />
-          <ChatInput />
+        <div className="flex min-h-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <ChatMessages />
+            <ChatInput />
+          </div>
+          <ContextRail />
         </div>
       ) : (
         <div className="min-h-0 flex-1">

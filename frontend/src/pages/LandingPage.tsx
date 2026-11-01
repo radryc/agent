@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { useChatStore } from "../stores/chatStore";
 import { Terminal, ArrowRight, MessageSquare } from "lucide-react";
+import ShiftHandover from "../components/nightwatch/ShiftHandover";
 
 export default function LandingPage() {
   const navigate = useNavigate();
@@ -15,6 +16,9 @@ export default function LandingPage() {
     <div className="relative h-full overflow-y-auto bg-dark-900 px-6">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.18),transparent_30%),radial-gradient(circle_at_bottom_right,_rgba(147,51,234,0.16),transparent_25%)]" />
       <div className="relative z-10 mx-auto flex min-h-full max-w-2xl flex-col items-center justify-center py-12 text-center">
+        <div className="mb-8 flex w-full justify-center">
+          <ShiftHandover />
+        </div>
         <div className="mb-8 flex flex-col items-center justify-center gap-6 sm:flex-row">
           <video
             src="/otto.mp4"
@@ -44,7 +48,7 @@ export default function LandingPage() {
 
         <button
           onClick={handleNewSession}
-          className="inline-flex items-center gap-2 rounded-xl bg-accent-blue px-6 py-3 text-base font-medium text-white shadow-[0_10px_35px_rgba(59,130,246,0.35)] transition-transform hover:-translate-y-0.5 hover:bg-accent-blue/90"
+          className="inline-flex items-center gap-2 rounded-xl bg-accent-blue px-6 py-3 text-base font-medium text-[var(--strata-accent-contrast)] shadow-[0_10px_35px_rgba(59,130,246,0.35)] transition-transform hover:-translate-y-0.5 hover:bg-accent-blue/90"
         >
           <Terminal size={18} />
           Start a session

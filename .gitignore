@@ -29,3 +29,8 @@ mytoken.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Frontend dependencies and build cache
+frontend/node_modules/
+frontend/.vite/
+frontend/tsconfig.tsbuildinfo
