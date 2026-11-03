@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 from duckduckgo_search import DDGS
 import httpx
@@ -754,6 +754,241 @@ register(Skill(
     parameters={},
     status_prefix="Checking agent SSO status",
     handler=_tool_agent_sso_status,
+))
+
+# ---------------------------------------------------------------------------
+# --- ASK STRATA VIEW CONTEXT ---
+# ---------------------------------------------------------------------------
+
+async def _tool_lb_edge_services(_args: dict) -> str:
+    base = str(get_runtime("lb_edge_registry_url") or settings.lb_edge_registry_url).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            resp = await client.get(f"{base}/services")
+            resp.raise_for_status()
+            return _truncate(resp.text)
+    except Exception as e:
+        logger.warning("lb_edge_services failed: %s", e)
+        return f"LB Edge registry query failed: {e}"
+
+
+register(Skill(
+    name="lb_edge_services", category="strata",
+    description="List services registered with LB Edge, including account, external port, protocol, description, and backends. Use for questions about edge routes or a service that should be reachable through lb-edge.",
+    parameters={},
+    status_prefix="Querying LB Edge services",
+    handler=_tool_lb_edge_services,
+))
+
+_VIEW_ROUTES: dict[str, dict] = {
+    "doctor": {
+        "name": "Doctor",
+        "purpose": (
+            "Privacy-first telemetry triage across on-call health, dashboards, "
+            "APM services, federation, alerts, recording rules, traces, logs, "
+            "metrics, fleet state, and synthetics."
+        ),
+        "routes": {
+            "/": ("On-call workspace", [("doctor_event_analysis", {"limit": 40})]),
+            "/dashboards": ("Dashboards", [("doctor_metrics_names", {"limit": 40})]),
+            "/services": ("APM Services", [
+                ("doctor_logs_services", {}),
+                ("doctor_traces_recent", {"limit": 5}),
+            ]),
+            "/federation": ("Federation catalog", [("guardian_overview", {})]),
+            "/alerts": ("Alerts", [("doctor_guardian_events", {"limit": 20})]),
+            "/rules": ("Recording Rules", [("doctor_metrics_names", {"limit": 40})]),
+            "/traces": ("Traces", [("doctor_traces_recent", {"limit": 10})]),
+            "/logs": ("Logs", [
+                ("doctor_logs_services", {}),
+                ("doctor_logs_search", {"limit": 10}),
+            ]),
+            "/metrics": ("Metrics", [("doctor_metrics_names", {"limit": 40})]),
+            "/fleet": ("Fleet", [("guardian_overview", {})]),
+            "/probes": ("Synthetics", [("guardian_overview", {})]),
+        },
+        "followups": [
+            "doctor_logs_search", "doctor_metrics_names",
+            "doctor_metrics_query", "doctor_traces_recent",
+        ],
+    },
+    "guardian": {
+        "name": "Guardian",
+        "purpose": (
+            "Control plane for partitions, intents, assets, rollouts, drift, "
+            "deployment history, and reconciliation."
+        ),
+        "routes": {
+            "/": ("Overview", [("guardian_overview", {})]),
+        },
+        "followups": [
+            "guardian_partition_detail", "guardian_intent_activity",
+            "guardian_partitions", "doctor_guardian_events",
+        ],
+    },
+    "monofs": {
+        "name": "MonoFS",
+        "purpose": (
+            "Distributed virtual filesystem: routers, MetaStores, repositories, "
+            "ingest, search, indexer, fetchers, dependencies, and registry."
+        ),
+        "routes": {
+            "/": ("Dashboard", [("monofs_status", {})]),
+            "/repositories": ("Repositories", [("monofs_refs", {})]),
+            "/registry": ("Registry", [("monofs_refs", {})]),
+            "/dependencies": ("Dependencies", [("monofs_refs", {})]),
+            "/search": ("Search", [("monofs_status", {})]),
+            "/indexer": ("Indexer", [("monofs_status", {})]),
+            "/fetchers": ("Fetchers", [("monofs_status", {})]),
+            "/cluster": ("MetaStores", [("monofs_status", {})]),
+        },
+        "followups": ["monofs_refs", "monofs_search", "monofs_status"],
+    },
+    "lb-edge": {
+        "name": "LB Edge",
+        "purpose": (
+            "L4 edge registry and proxy. Lists the services registered by "
+            "lb-k8s-agent, their external ports, protocols, and backends."
+        ),
+        "routes": {
+            "/": ("Services", [("lb_edge_services", {})]),
+        },
+        "followups": ["lb_edge_services"],
+    },
+    "strata": {
+        "name": "Strata",
+        "purpose": (
+            "Cross-product platform overview covering Doctor telemetry, "
+            "Guardian control-plane state, MonoFS storage, and LB Edge routes."
+        ),
+        "routes": {
+            "/": ("Platform overview", [("guardian_overview", {})]),
+        },
+        "followups": [
+            "guardian_overview", "doctor_logs_services",
+            "monofs_status", "lb_edge_services",
+        ],
+    },
+}
+
+
+def _normalize_view_product(value: str) -> str:
+    product = value.strip().lower().replace("_", "-")
+    return {
+        "mono-fs": "monofs",
+        "mono fs": "monofs",
+        "lb": "lb-edge",
+        "lb edge": "lb-edge",
+        "lbed": "lb-edge",
+    }.get(product, product)
+
+
+def _resolve_view_starter(product: str, path: str) -> tuple[str, str, list[tuple[str, dict]]]:
+    spec = _VIEW_ROUTES[product]
+    parsed = urlparse(path if path.startswith("/") else f"/{path}")
+    path_only = parsed.path or "/"
+    query = parse_qs(parsed.query)
+
+    if product == "doctor":
+        match = re.match(r"^/partition/([^/]+)", path_only)
+        if match:
+            partition = match.group(1)
+            return (
+                f"Partition {partition}",
+                f"Partition-scoped Doctor view. Use guardian_partition_detail('{partition}') "
+                "for Guardian state and partition-filtered Doctor log/metric/trace tools "
+                "for telemetry.",
+                [("guardian_partition_detail", {"partition": partition})],
+            )
+
+    if product == "guardian":
+        partition = (query.get("partition") or [""])[0].strip()
+        panel = (query.get("panel") or [""])[0].strip()
+        if partition:
+            panel_label = panel or "Overview"
+            return (
+                f"Partition {partition} · {panel_label}",
+                f"Guardian partition view for '{partition}' (panel={panel_label}). "
+                "Use guardian_partition_detail to inspect manifest, intents, asset health, "
+                "topology, drift, and recent events.",
+                [("guardian_partition_detail", {"partition": partition})],
+            )
+
+    routes = spec["routes"]
+    route_spec = routes.get(path_only)
+    if route_spec is None:
+        for prefix, candidate in sorted(routes.items(), key=lambda item: len(item[0]), reverse=True):
+            if prefix != "/" and path_only.startswith(prefix):
+                route_spec = candidate
+                break
+    if route_spec is None:
+        route_spec = routes.get("/", (spec["name"], spec.get("default", [])))
+    label, starter = route_spec
+    return label, "", list(starter)
+
+
+async def _tool_strata_view_context(args: dict) -> str:
+    product = str(args.get("product") or "").strip()
+    path = str(args.get("path") or "").strip()
+    context = str(args.get("context") or "").strip()
+
+    if context:
+        parts = re.split(r"\s*[·|]\s*", context, maxsplit=1)
+        if len(parts) == 2:
+            product = product or parts[0]
+            path = path or parts[1]
+
+    product = _normalize_view_product(product)
+    path = path or "/"
+    if product not in _VIEW_ROUTES:
+        return (
+            f"Unknown Ask Strata view {product!r}. Expected doctor, guardian, "
+            "monofs, lb-edge, or strata."
+        )
+
+    label, detail, starter = _resolve_view_starter(product, path)
+    spec = _VIEW_ROUTES[product]
+    lines = [
+        f"View: {spec['name']} · {path}",
+        f"Screen: {label}",
+        f"Purpose: {spec['purpose']}",
+    ]
+    if detail:
+        lines.append(f"Context: {detail}")
+    lines.append(
+        "Follow-up tools: " + ", ".join(spec.get("followups", [])) + "."
+    )
+
+    for tool_name, tool_args in starter:
+        result = await execute_tool(tool_name, tool_args)
+        lines.append(
+            f"Starter query `{tool_name}` {json.dumps(tool_args)}:\n{result}"
+        )
+
+    lines.append(
+        "Answer from the starter results and any follow-up tool calls. Report "
+        "empty, unauthorized, or failed results explicitly; never invent live "
+        "values. Keep the answer short: what this view shows, what to check "
+        "first, and the evidence you actually queried."
+    )
+    return "\n\n".join(lines)
+
+
+register(Skill(
+    name="strata_view_context", category="strata",
+    description=(
+        "Use when a conversation starts with 'View context: <product> · <path>' "
+        "or the user asks about the current Strata UI view. Resolves the product "
+        "and route into the right tools and runs a live starter query. Products: "
+        "doctor, guardian, monofs, lb-edge."
+    ),
+    parameters={
+        "product": "UI product: doctor | guardian | monofs | lb-edge",
+        "path": "UI route or hash path, for example /logs, /?partition=agent, /cluster",
+        "context": "Optional raw context string, for example 'Doctor · /services'",
+    },
+    status_prefix="Resolving the current Strata view",
+    handler=_tool_strata_view_context,
 ))
 
 # ---------------------------------------------------------------------------

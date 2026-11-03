@@ -10,19 +10,26 @@ import NightwatchPage from "./pages/NightwatchPage";
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthGate>
-        <Routes>
-          <Route path="/embed/ask" element={<EmbedPage />} />
-          <Route element={<AppLayout />}>
-            <Route path="/" element={<LandingPage />} />
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/chat/:sessionId" element={<ChatPage />} />
-            <Route path="/nightwatch" element={<NightwatchPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </AuthGate>
+      <Routes>
+        {/* The embed drawer is used inside Doctor, Guardian, and MonoFS. It
+            must render without an interactive SSO gate; the backend still
+            applies the agent's machine identity to its tools. */}
+        <Route path="/embed/ask" element={<EmbedPage />} />
+        <Route
+          element={
+            <AuthGate>
+              <AppLayout />
+            </AuthGate>
+          }
+        >
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/chat/:sessionId" element={<ChatPage />} />
+          <Route path="/nightwatch" element={<NightwatchPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
     </BrowserRouter>
   );
 }
