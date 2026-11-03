@@ -40,12 +40,15 @@ STEVE_DEFAULT_PROMPT = (
     "`${intent.<intent>.outputs.<asset>.imageRef}`, keep secrets late-bound, run "
     "`guardianctl partition validate-local --root ./stratatools/partitions` and "
     "`guardianctl -format json intent plan --partition <p>`, then show the diff and ask before push/reconcile. "
-    "Full playbook: `.github/skills/guardian-partition-authoring/SKILL.md`.\n"
+    "Full playbook: `agent/.github/skills/guardian-partition-authoring/SKILL.md`.\n"
+    "- Ask Strata views: use `strata_view_context(product, path)` to resolve the current Doctor, "
+    "Guardian, MonoFS, or LB Edge view into live tools; `lb_edge_services` lists registered edge routes. "
+    "Full playbook: `agent/.github/skills/ask-strata-view/SKILL.md`.\n"
     "- Telemetry: use `doctor_logs_services`, `doctor_logs_search`, `doctor_metrics_query`, "
     "`doctor_traces_recent`, and `doctor_trace_detail`; scope to `guardian_partition=agent` or "
     "`service=~\"agent\\..*\"`; Doctor and Guardian calls use the backend OIDC/SSO token automatically, "
     "so check `GET /api/auth/status` if a query returns 401, or use `kubectl -n agent logs/describe` and report "
-    "the limitation. Full playbook: `.github/skills/query-agent-telemetry/SKILL.md`."
+    "the limitation. Full playbook: `agent/.github/skills/query-agent-telemetry/SKILL.md`."
 )
 
 OTTO_OPERATING_POLICY = (
@@ -60,6 +63,8 @@ OTTO_OPERATING_POLICY = (
     "- Query languages: use doctor_metrics_query for PromQL, doctor_logql_query for native Loki LogQL, and doctor_traceql_query / doctor_traceql_metrics for native Tempo TraceQL. The simplified log/trace tools are conveniences, not a replacement for the native query APIs.\n"
     "- Before writing a LogQL selector, call doctor_logql_schema (or doctor_logql_label_values) to learn the real labels. Severity is the `level` label. Stored severity is uppercase while the exposed stream label is lowercase, so use `{guardian_partition=\"monofs\", level=~\"(?i)warn\"}` rather than a body filter for the word WARN. Partition/component/asset labels are `guardian_partition`, `guardian_component`, `guardian_asset`.\n"
     "- Doctor's canonical label vocabulary is defined in `doctor/internal/query/labels.go` (for example `guardian_partition`, `guardian_intent`, `guardian_asset`, `guardian_component`, `level`, `service`). Use `doctor_logql_schema` for live values and `monofs_search` to inspect the Doctor source when a label is unclear; do not guess from generic Loki conventions.\n"
+    "- When the conversation starts with 'View context: <product> · <path>' (the Ask Strata button in Doctor, Guardian, MonoFS, or LB Edge), call strata_view_context first. It returns the view playbook and a live starter query; follow up with the recommended tools only when the starter result is insufficient.\n"
+    "- For LB Edge questions, use lb_edge_services to list registered routes and their external ports before guessing why an edge URL is unreachable.\n"
     "- Prefer doctor_event_analysis + guardian detail for incident triage, monofs_search for code localization, and deploy tools only after an approved plan.\n"
     "- Nightwatch is the background shadow-mode SRE observer. It never executes actions. When asked what happened while the user was away, or why a recommendation/escalation was made, call nightwatch_overview / nightwatch_incidents / nightwatch_activity / nightwatch_incident_detail and answer from the ledger.\n"
     "- Doctor and Guardian calls use the backend OIDC/SSO token automatically. If a telemetry query returns 401/403, call agent_sso_status and report the SSO/auth issue instead of bypassing access controls. Remember that client-credentials tokens are the machine identity; per-user visibility requires the interactive SSO login.\n"
@@ -85,6 +90,8 @@ STEVE_TOOL_NAMES: tuple[str, ...] = (
     "web_fetch",
     # strata (readiness + planning only)
     "strata_stack_check",
+    "strata_view_context",
+    "lb_edge_services",
     "agent_sso_status",
     "remote_vscode_plan",
     # guardian (read-only views)

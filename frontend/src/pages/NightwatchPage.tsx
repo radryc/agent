@@ -430,8 +430,9 @@ export default function NightwatchPage() {
               <div>
                 <p className="text-sm text-gray-200">Nightwatch is not connected</p>
                 <p className="mt-1 text-xs text-gray-500">
-                  Set <code>NIGHTWATCH_URL</code> on the agent backend and enable a partition
-                  with <code>nightwatch.strata.io/enabled: "true"</code>.
+                  Deploy the <code>nightwatch</code> partition, set <code>NIGHTWATCH_URL</code>{" "}
+                  on the agent backend, and enable a watched partition with{" "}
+                  <code>nightwatch.strata.io/enabled: "true"</code>.
                 </p>
                 {overview.last_error && (
                   <p className="mt-1 text-xs text-rose-400">{overview.last_error}</p>

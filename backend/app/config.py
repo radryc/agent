@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     doctor_query_url: str = (
         "http://k8s-svc-compute-k8s-main-doctor-doctor-query-query.doctor.svc.cluster.local:18080"
     )
+    # LB Edge registry API. Defaults to the in-cluster service; override with
+    # LB_EDGE_REGISTRY_URL for docker-compose or an external edge.
+    lb_edge_registry_url: str = (
+        "http://monofs-external.lb-edge.svc.cluster.local:18081"
+    )
 
     # Nightwatch: headless shadow-mode SRE observer. The interactive backend
     # only proxies read-only Nightwatch APIs; the worker runs in its own

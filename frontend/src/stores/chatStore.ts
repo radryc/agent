@@ -12,6 +12,8 @@ interface ChatState {
   /** Last stream failure, surfaced in the chat instead of silently dropping the turn. */
   streamError: string | null;
   ws: ChatWebSocket | null;
+  /** True once the agent websocket is open; used by the embed view auto-prompt. */
+  agentConnected: boolean;
   activeAgent: AgentType;
   activePersona: PersonaType;
   /** Persona that answered the current/streamed turn (from the WS persona event). */
@@ -50,6 +52,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamContent: "",
   streamError: null,
   ws: null,
+  agentConnected: false,
   activeAgent: "local",
   activePersona: "auto",
   streamPersona: null,
@@ -173,6 +176,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const ws = new ChatWebSocket(handler, {
       onClose: () => {
+        set({ agentConnected: false });
         const state = get();
         if (state.isStreaming) {
           const partial = state.streamContent;
@@ -207,9 +211,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ? "Could not reach the agent backend."
             : s.streamError,
           terminalConnected: false,
+          agentConnected: false,
         }));
       },
       onOpen: () => {
+        set({ agentConnected: true });
         if (get().mode === "terminal") {
           get().startTerminal();
         }
@@ -223,7 +229,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   cleanup: () => {
     get().ws?.disconnect();
-    set({ ws: null });
+    set({ ws: null, agentConnected: false });
   },
 
   loadSessions: async () => {
