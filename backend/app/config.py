@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
@@ -54,10 +55,17 @@ class Settings(BaseSettings):
     auto_switch_enabled: bool = True
     auto_push_enabled: bool = False
 
-    # MonoFS writable workspace (used by Steve to edit/commit/push code)
+    # MonoFS writable workspace (used by Steve to edit/commit/push code).
+    # MONOFS_OVERLAY_DIR is the same variable monofs-client uses to place
+    # session.sock, so honour it before falling back to the docker default.
     monofs_router: str = ""
     monofs_mount: str = "/workspace"
-    monofs_overlay: str = "/data/monofs-overlay"
+    monofs_search_addr: str = ""
+    monofs_overlay: str = (
+        os.getenv("MONOFS_OVERLAY_DIR")
+        or os.getenv("MONOFS_OVERLAY")
+        or "/data/monofs-overlay"
+    )
 
     # Gemini image generation
     gemini_api_key: str = ""

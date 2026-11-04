@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from app.config import settings
 from app.nightwatch.state import state
@@ -118,6 +118,28 @@ async def incident(incident_id: str):
     if item is None:
         raise HTTPException(status_code=404, detail="incident not found")
     return item
+
+
+@router.post(
+    "/v1/incidents/{incident_id}/improvements/{improvement_id}/session",
+    dependencies=[Depends(_authorize)],
+)
+async def improvement_session(incident_id: str, improvement_id: str, request: Request):
+    store = _require_store()
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    session_id = str((payload or {}).get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    improvement = await store.get_improvement(improvement_id)
+    if improvement is None or improvement["incident_id"] != incident_id:
+        raise HTTPException(status_code=404, detail="improvement not found")
+    updated = await store.mark_improvement_handoff(improvement_id, session_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="improvement not found")
+    return updated
 
 
 @router.get("/v1/activity", dependencies=[Depends(_authorize)])

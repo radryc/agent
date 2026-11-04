@@ -27,6 +27,9 @@ Rules:
   and recommend "handoff". Nightwatch never writes across partition boundaries.
 - Allowed recommended_action values: none, reconcile, restart, scale, rollback,
   silence, ack, notify, handoff, escalate.
+- Suggest concrete observability improvements when the evidence shows gaps
+  (missing metrics, error logs, traces, labels, dashboards, or alert queries).
+  These are proposals for Software Steve, not executed changes.
 - Return strict JSON only, with no markdown fences.
 
 JSON shape:
@@ -45,7 +48,17 @@ JSON shape:
   "falsification": "what evidence would prove this wrong",
   "escalate": false,
   "escalation_reason": "",
-  "escalation_target": ""
+  "escalation_target": "",
+  "improvements": [
+    {
+      "title": "short actionable title",
+      "category": "metrics|logs|traces|labels|alerting|dashboard|docs",
+      "rationale": "why the current observability is insufficient",
+      "proposed_change": "specific code/config/query change",
+      "target": "repo/path or component",
+      "confidence": 0.0
+    }
+  ]
 }
 """
 
@@ -88,6 +101,9 @@ def _validate(payload: dict[str, Any]) -> dict[str, Any]:
     evidence_ids = payload.get("evidence_ids")
     if not isinstance(evidence_ids, list):
         evidence_ids = []
+    improvements = payload.get("improvements")
+    if not isinstance(improvements, list):
+        improvements = []
     return {
         "summary": str(payload.get("summary") or "").strip(),
         "root_cause_candidate": {
@@ -104,6 +120,7 @@ def _validate(payload: dict[str, Any]) -> dict[str, Any]:
         "escalate": bool(payload.get("escalate")),
         "escalation_reason": str(payload.get("escalation_reason") or "").strip(),
         "escalation_target": str(payload.get("escalation_target") or "").strip(),
+        "improvements": improvements,
     }
 
 

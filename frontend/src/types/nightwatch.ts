@@ -91,11 +91,27 @@ export interface NightwatchFinding {
   created_at: string;
 }
 
+export interface NightwatchImprovement {
+  id: string;
+  incident_id: string;
+  title: string;
+  category: string;
+  rationale: string;
+  proposed_change: string;
+  target: string;
+  confidence: number;
+  status: string;
+  session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface NightwatchIncidentDetail extends NightwatchIncident {
   alerts: NightwatchAlert[];
   events: NightwatchEvent[];
   evidence: NightwatchEvidence[];
   findings: NightwatchFinding[];
+  improvements: NightwatchImprovement[];
 }
 
 export interface NightwatchBrief {

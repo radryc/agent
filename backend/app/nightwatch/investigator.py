@@ -20,6 +20,18 @@ DEFAULT_METRIC_QUERIES = (
     'sum by (service) (rate(process_cpu_seconds_total{guardian_partition="__PARTITION__"}[5m]))',
     'sum by (service) (process_resident_memory_bytes{guardian_partition="__PARTITION__"})',
     'sum by (service, code) (rate(http_requests_total{guardian_partition="__PARTITION__"}[5m]))',
+    # Metrics that exist under service labels rather than a partition label.
+    'up{service=~"__PARTITION__\\..*"}',
+    'process_cpu_seconds_total{service=~"__PARTITION__\\..*"}',
+    'process_resident_memory_bytes{service=~"__PARTITION__\\..*"}',
+    'http_requests_total{service=~"__PARTITION__\\..*"}',
+    # Discover the application metrics the partition actually exports.
+    'count by (__name__) ({guardian_partition="__PARTITION__"})',
+    # Guardian pusher health is reported by the registry, not by partition.
+    'guardian_registry_pusher_heartbeat_age_seconds',
+    'guardian_registry_pushers',
+    'guardian_pusher_task_failures',
+    'guardian_pusher_task_executions',
 )
 
 @dataclass
@@ -43,6 +55,16 @@ class Candidate:
 
 
 @dataclass
+class ImprovementDraft:
+    title: str
+    category: str
+    rationale: str
+    proposed_change: str
+    target: str
+    confidence: float
+
+
+@dataclass
 class InvestigationResult:
     summary: str
     root_cause_partition: str
@@ -57,6 +79,7 @@ class InvestigationResult:
     escalation_reason: str = ""
     evidence: list[EvidenceDraft] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)
+    improvements: list[ImprovementDraft] = field(default_factory=list)
     error: str = ""
 
 
@@ -201,7 +224,21 @@ class Investigator:
     ) -> InvestigationResult:
         partition = str(incident.get("partition") or "")
         now = datetime.utcnow()
+        # Cover the alert's lifetime, not just the last 30 minutes. Cap the
+        # lookback so an old incident cannot trigger an unbounded log scan.
         since = now - timedelta(minutes=30)
+        for alert in alerts:
+            raw = alert.get("starts_at")
+            if not raw:
+                continue
+            try:
+                started = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).replace(
+                    tzinfo=None
+                )
+            except ValueError:
+                continue
+            if started - timedelta(minutes=5) < since:
+                since = max(started - timedelta(minutes=5), now - timedelta(hours=6))
         evidence: list[EvidenceDraft] = []
         candidates: list[Candidate] = []
         errors: list[str] = []
@@ -228,7 +265,7 @@ class Investigator:
             affected_service=affected_service,
             evidence_prefix=evidence_prefix,
         )
-        return self._merge_assessment(
+        result = self._merge_assessment(
             incident=incident,
             assessment=assessment,
             evidence=evidence,
@@ -236,6 +273,11 @@ class Investigator:
             affected_service=affected_service,
             errors=errors,
         )
+        result.improvements = self._merge_improvements(
+            self._llm_improvements(assessment.get("improvements")),
+            self._derive_improvements(incident, alerts, evidence),
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Evidence collection
@@ -339,24 +381,30 @@ class Investigator:
         evidence: list[EvidenceDraft],
         errors: list[str],
     ) -> None:
-        try:
-            payload = await self.doctor.logs(partition, query="error", start=start, end=end, limit=20)
-            summary = _logs_summary(payload)
-        except NightwatchUpstreamError as exc:
-            errors.append(f"logs: {exc}")
-            summary = f"unavailable: {exc}"
-            payload = {"error": str(exc)}
-        evidence.append(
-            EvidenceDraft(
-                kind="log",
-                query=f"logs partition={partition} q=error limit=20",
-                from_ts=start,
-                to_ts=end,
-                result_summary=summary,
-                result_hash=_hash(payload),
-                source="doctor",
+        for query in ("", "error"):
+            query_text = f"logs partition={partition}" + (
+                f" q={query}" if query else " (all records)"
+            ) + " limit=20"
+            try:
+                payload = await self.doctor.logs(
+                    partition, query=query, start=start, end=end, limit=20
+                )
+                summary = _logs_summary(payload)
+            except NightwatchUpstreamError as exc:
+                errors.append(f"logs: {exc}")
+                summary = f"unavailable: {exc}"
+                payload = {"error": str(exc)}
+            evidence.append(
+                EvidenceDraft(
+                    kind="log",
+                    query=query_text,
+                    from_ts=start,
+                    to_ts=end,
+                    result_summary=summary,
+                    result_hash=_hash(payload),
+                    source="doctor",
+                )
             )
-        )
 
     async def _collect_traces(
         self,
@@ -796,6 +844,217 @@ class Investigator:
             candidates=candidates,
             error="; ".join(errors[-5:]),
         )
+
+    @staticmethod
+    def _evidence_text(evidence: list[EvidenceDraft], kind: str) -> str:
+        return " ".join(
+            f"{item.query} {item.result_summary}" for item in evidence if item.kind == kind
+        ).lower()
+
+    @staticmethod
+    def _llm_improvements(raw: Any) -> list[ImprovementDraft]:
+        if not isinstance(raw, list):
+            return []
+        allowed = {"metrics", "logs", "traces", "labels", "alerting", "dashboard", "docs"}
+        out: list[ImprovementDraft] = []
+        seen: set[str] = set()
+        for item in raw[:6]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            rationale = str(item.get("rationale") or "").strip()
+            change = str(item.get("proposed_change") or "").strip()
+            if not title or not change:
+                continue
+            key = title.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            category = str(item.get("category") or "metrics").strip().lower()
+            if category not in allowed:
+                category = "metrics"
+            try:
+                confidence = float(item.get("confidence") or 0.5)
+            except (TypeError, ValueError):
+                confidence = 0.5
+            out.append(
+                ImprovementDraft(
+                    title=title[:180],
+                    category=category,
+                    rationale=rationale[:1200],
+                    proposed_change=change[:2000],
+                    target=str(item.get("target") or "").strip()[:240],
+                    confidence=max(0.0, min(1.0, confidence)),
+                )
+            )
+        return out
+
+    @staticmethod
+    def _derive_improvements(
+        incident: dict,
+        alerts: list[dict],
+        evidence: list[EvidenceDraft],
+    ) -> list[ImprovementDraft]:
+        metric_text = Investigator._evidence_text(evidence, "metric")
+        log_text = Investigator._evidence_text(evidence, "log")
+        trace_text = Investigator._evidence_text(evidence, "trace")
+        alert_names = {str(alert.get("alertname") or "") for alert in alerts}
+        pusher_alert = any(name.startswith("GuardianPusher") for name in alert_names)
+        custom_metrics = any(
+            item.kind == "metric"
+            and item.query.startswith("count by (__name__)")
+            and "no samples" not in item.result_summary.lower()
+            for item in evidence
+        )
+        standard_metrics_missing = (
+            'up{guardian_partition="' in metric_text
+            and "no samples" in metric_text
+            and "guardian_probe_up" in metric_text
+        )
+        no_error_logs = "0 records" in log_text or "no records" in log_text
+        no_traces = "no traces" in trace_text or "0 traces" in trace_text
+        suggestions: list[ImprovementDraft] = []
+
+        if pusher_alert:
+            suggestions.append(
+                ImprovementDraft(
+                    title="Expose a per-pusher heartbeat gauge and alert on it",
+                    category="metrics",
+                    rationale=(
+                        "The alert targets guardian_pusher=k8s-main, but the evidence pack "
+                        "queries health by guardian_partition. Registry pusher metrics exist, "
+                        "yet there is no simple guardian_pusher_healthy/heartbeat series for "
+                        "dashboards and paging rules."
+                    ),
+                    proposed_change=(
+                        "Add `guardian_pusher_heartbeat_age_seconds{guardian_pusher,partition}` "
+                        "and `guardian_pusher_healthy{guardian_pusher,partition}` gauges (or "
+                        "recording rules over guardian_registry_pusher_heartbeat_age_seconds). "
+                        "Point GuardianPusherUnhealthy and GuardianPusherHeartbeatStale at those "
+                        "series and add a per-pusher dashboard panel."
+                    ),
+                    target="guardian/internal/pusher + stratatools/partitions/monitoring",
+                    confidence=0.82,
+                )
+            )
+            suggestions.append(
+                ImprovementDraft(
+                    title="Log pusher heartbeat and task failures with structured fields",
+                    category="logs",
+                    rationale=(
+                        "The error-log query returned no records. That does not prove the "
+                        "pusher is healthy: heartbeat expiry, registration failures, and task "
+                        "failures are not logged with enough structured context to investigate."
+                    ),
+                    proposed_change=(
+                        "Emit structured WARN/ERROR logs in guardian-pusher-k8s on heartbeat "
+                        "expiry, registration failure, and task failure, including "
+                        "guardian_pusher, partition, task_id, and error. Add a periodic debug "
+                        "heartbeat line and document the field names for Doctor searches."
+                    ),
+                    target="guardian/internal/pusher",
+                    confidence=0.68,
+                )
+            )
+
+        if standard_metrics_missing:
+            suggestions.append(
+                ImprovementDraft(
+                    title="Add standard process and HTTP metrics with partition labels",
+                    category="metrics",
+                    rationale=(
+                        "`guardian_probe_up` exists for doctor services, while `up`, "
+                        "`process_cpu_seconds_total`, `process_resident_memory_bytes`, and "
+                        "`http_requests_total` have no samples for guardian_partition=doctor. "
+                        "The current metric pack therefore cannot distinguish an idle service "
+                        "from a missing scrape."
+                    ),
+                    proposed_change=(
+                        "Fix the OTel Collector/Prometheus receiver relabeling so standard "
+                        "process/HTTP metrics retain guardian_partition=doctor, or expose "
+                        "equivalent doctor_* series. Add dashboard panels and Nightwatch "
+                        "queries for the metrics that actually exist."
+                    ),
+                    target="stratatools/partitions/opentelemetry + doctor services",
+                    confidence=0.74,
+                )
+            )
+
+        if custom_metrics:
+            suggestions.append(
+                ImprovementDraft(
+                    title="Use existing doctor_* and go_* metrics in dashboards and investigations",
+                    category="dashboard",
+                    rationale=(
+                        "The investigation found custom doctor_* and go_* series, but the "
+                        "fixed `up`/process/HTTP queries returned empty. The data exists; the "
+                        "queries and dashboard coverage do not point at it."
+                    ),
+                    proposed_change=(
+                        "Add dashboard panels and recording rules for doctor_component_up, "
+                        "doctor_ingest_*, doctor_federation_*, and go_* metrics. Extend "
+                        "Nightwatch's metric discovery to include the names returned by "
+                        "`count by (__name__)` and to query them by service."
+                    ),
+                    target="stratatools/partitions/monitoring + agent/nightwatch",
+                    confidence=0.7,
+                )
+            )
+
+        if no_error_logs and not pusher_alert:
+            suggestions.append(
+                ImprovementDraft(
+                    title="Add structured error-path logging for the affected service",
+                    category="logs",
+                    rationale=(
+                        "The error-log query returned no records. The investigation cannot "
+                        "distinguish a clean service from one that never logs its failure path."
+                    ),
+                    proposed_change=(
+                        "Add structured WARN/ERROR logs around request failures, probe "
+                        "failures, and state transitions, including service, partition, and "
+                        "trace/span IDs where available."
+                    ),
+                    target=str(incident.get("partition") or ""),
+                    confidence=0.55,
+                )
+            )
+
+        if no_traces:
+            suggestions.append(
+                ImprovementDraft(
+                    title="Enable OTLP tracing for the affected service",
+                    category="traces",
+                    rationale=(
+                        "The trace query returned no traces. Without spans, Nightwatch cannot "
+                        "separate latency, dependency, and error causes."
+                    ),
+                    proposed_change=(
+                        "Instrument the service with OTLP and export to Doctor; ensure "
+                        "guardian_partition, service.name, and trace context propagate to "
+                        "downstream calls."
+                    ),
+                    target=str(incident.get("partition") or ""),
+                    confidence=0.6,
+                )
+            )
+
+        return suggestions[:4]
+
+    @staticmethod
+    def _merge_improvements(
+        llm: list[ImprovementDraft],
+        heuristic: list[ImprovementDraft],
+    ) -> list[ImprovementDraft]:
+        merged: list[ImprovementDraft] = []
+        seen: set[str] = set()
+        for item in [*heuristic, *llm]:
+            key = item.title.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged[:4]
 
     @staticmethod
     def _deterministic_recommendation(evidence: list[EvidenceDraft]) -> str:

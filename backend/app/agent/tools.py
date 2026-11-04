@@ -234,7 +234,12 @@ async def _monofs_env() -> dict[str, str]:
 def _truncate(text: str, max_len: int = 8000) -> str:
     if len(text) <= max_len:
         return text
-    return text[:max_len] + "\n...[truncated]"
+    omitted = len(text) - max_len
+    return (
+        text[:max_len]
+        + f"\n...[truncated: {max_len} of {len(text)} chars shown, "
+        f"{omitted} omitted. Narrow the query and retry.]"
+    )
 
 
 def _to_bool(value, default: bool = False) -> bool:
@@ -998,7 +1003,7 @@ register(Skill(
 async def _tool_guardian_overview(_args: dict) -> str:
     try:
         data = await _guardian_get("/api/overview")
-        return _truncate(data)
+        return _truncate(data, 20000)
     except Exception as e:
         logger.warning("guardian_overview failed: %s", e)
         return f"Guardian overview query failed: {e}"
@@ -1016,7 +1021,7 @@ register(Skill(
 async def _tool_guardian_partitions(_args: dict) -> str:
     try:
         data = await _guardian_get("/api/partitions")
-        return _truncate(data)
+        return _truncate(data, 20000)
     except Exception as e:
         logger.warning("guardian_partitions failed: %s", e)
         return f"Guardian partition list failed: {e}"
@@ -1031,21 +1036,313 @@ register(Skill(
 
 # ---------------------------------------------------------------------------
 
+_GUARDIAN_DETAIL_SUMMARY_MAX = 16_000
+_GUARDIAN_DETAIL_MANIFEST_MAX = 24_000
+_GUARDIAN_DETAIL_FULL_MAX = 131_072
+
+
+def _drop_empty(mapping: dict) -> dict:
+    return {
+        key: value
+        for key, value in mapping.items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+
+
+def _guardian_partition_name(payload: dict) -> str:
+    partition = payload.get("partition")
+    manifest = partition.get("manifest") if isinstance(partition, dict) else None
+    metadata = manifest.get("metadata") if isinstance(manifest, dict) else None
+    name = metadata.get("name") if isinstance(metadata, dict) else None
+    return str(name or "")
+
+
+def _guardian_intents(payload: dict) -> list[dict]:
+    return [item for item in payload.get("intents", []) if isinstance(item, dict)]
+
+
+def _guardian_intent_names(payload: dict) -> list[str]:
+    return [
+        str(item.get("name"))
+        for item in _guardian_intents(payload)
+        if item.get("name")
+    ]
+
+
+def _guardian_find_intent(payload: dict, intent_name: str) -> dict | None:
+    for intent in _guardian_intents(payload):
+        if str(intent.get("name")) == intent_name:
+            return intent
+    return None
+
+
+def _guardian_asset_summary(asset: dict) -> dict:
+    return _drop_empty({
+        "name": asset.get("name"),
+        "type": asset.get("type"),
+        "status": asset.get("status"),
+        "displayStatus": asset.get("displayStatus"),
+        "ports": asset.get("ports"),
+        "replicas": asset.get("replicas"),
+    })
+
+
+def _guardian_intent_summary(intent: dict) -> dict:
+    return _drop_empty({
+        "name": intent.get("name"),
+        "status": intent.get("status"),
+        "displayStatus": intent.get("displayStatus"),
+        "health": intent.get("health"),
+        "summary": intent.get("summary"),
+        "locked": intent.get("locked"),
+        "taskActive": intent.get("taskActive"),
+        "targetSummary": intent.get("targetSummary"),
+        "assets": [
+            _guardian_asset_summary(asset)
+            for asset in intent.get("assets", [])
+            if isinstance(asset, dict)
+        ],
+    })
+
+
+def _guardian_partition_summary(payload: dict, intent_name: str = "") -> dict | None:
+    intents = _guardian_intents(payload)
+    if intent_name:
+        intent = _guardian_find_intent(payload, intent_name)
+        if intent is None:
+            return None
+        intents = [intent]
+    health = payload.get("health")
+    health = health if isinstance(health, dict) else {}
+    return _drop_empty({
+        "partition": _guardian_partition_name(payload),
+        "generatedAt": payload.get("generatedAt"),
+        "health": _drop_empty({
+            "status": health.get("status"),
+            "displayStatus": health.get("displayStatus"),
+            "summary": health.get("summary"),
+            "healthy": health.get("healthy"),
+            "attention": health.get("attention"),
+            "failing": health.get("failing"),
+            "pending": health.get("pending"),
+            "locked": health.get("locked"),
+        }),
+        "intents": [_guardian_intent_summary(intent) for intent in intents],
+    })
+
+
+def _guardian_filter_manifest(manifest: dict, asset_name: str) -> dict:
+    filtered = json.loads(json.dumps(manifest))
+    spec = filtered.get("spec")
+    if isinstance(spec, dict) and isinstance(spec.get("assets"), list):
+        spec["assets"] = [
+            asset
+            for asset in spec["assets"]
+            if isinstance(asset, dict) and str(asset.get("name")) == asset_name
+        ]
+    return filtered
+
+
+def _guardian_asset_runtime(asset: dict) -> dict:
+    # The desired properties live in manifest.spec.assets; do not duplicate
+    # them here or a six-asset intent blows past the old 8 KB budget.
+    return _drop_empty({
+        "name": asset.get("name"),
+        "type": asset.get("type"),
+        "status": asset.get("status"),
+        "displayStatus": asset.get("displayStatus"),
+        "health": asset.get("health"),
+        "summary": asset.get("summary"),
+        "outputs": asset.get("outputs"),
+        "ports": asset.get("ports"),
+        "replicas": asset.get("replicas"),
+        "observedHealth": asset.get("observedHealth"),
+        "applyReadiness": asset.get("applyReadiness"),
+    })
+
+
+def _guardian_intent_manifest_view(
+    payload: dict, intent_name: str, asset_name: str = ""
+) -> dict | None:
+    intent = _guardian_find_intent(payload, intent_name)
+    if intent is None:
+        return None
+    manifest = intent.get("manifest")
+    manifest = manifest if isinstance(manifest, dict) else {}
+    runtime_assets = [
+        item for item in intent.get("assets", []) if isinstance(item, dict)
+    ]
+    if asset_name:
+        manifest_assets = manifest.get("spec", {}).get("assets", [])
+        available = [
+            str(item.get("name"))
+            for item in manifest_assets
+            if isinstance(item, dict)
+        ]
+        if asset_name not in available:
+            return None
+        manifest = _guardian_filter_manifest(manifest, asset_name)
+        runtime_assets = [
+            asset
+            for asset in runtime_assets
+            if str(asset.get("name")) == asset_name
+        ]
+    return _drop_empty({
+        "partition": _guardian_partition_name(payload),
+        "intent": intent_name,
+        "manifestVersionID": intent.get("manifestVersionID"),
+        "status": intent.get("status"),
+        "displayStatus": intent.get("displayStatus"),
+        "health": intent.get("health"),
+        "summary": intent.get("summary"),
+        "locked": intent.get("locked"),
+        "targetSummary": intent.get("targetSummary"),
+        "manifest": manifest,
+        "assets": [_guardian_asset_runtime(asset) for asset in runtime_assets],
+    })
+
+
+def _guardian_asset_names(intent: dict) -> list[str]:
+    manifest = intent.get("manifest")
+    assets = (
+        manifest.get("spec", {}).get("assets", [])
+        if isinstance(manifest, dict)
+        else []
+    )
+    return [
+        str(item.get("name"))
+        for item in assets
+        if isinstance(item, dict) and item.get("name")
+    ]
+
+
 async def _tool_guardian_partition_detail(args: dict) -> str:
-    partition = args.get("partition", "")
+    partition = str(args.get("partition", "")).strip()
     if not partition:
         return "Error: partition name is required"
+
+    intent_name = str(args.get("intent", "")).strip()
+    asset_name = str(args.get("asset", "")).strip()
+    include = str(args.get("include", "")).strip().lower()
+    if not include:
+        include = "manifest" if intent_name else "summary"
+    if include not in {"summary", "manifest", "full"}:
+        return "Error: include must be one of summary, manifest, or full"
+    if asset_name and not intent_name:
+        return "Error: asset requires intent (asset names are scoped to an intent)"
+
     try:
         data = await _guardian_get(f"/api/partitions/{partition}")
-        return _truncate(data)
     except Exception as e:
         logger.warning("guardian_partition_detail(%s) failed: %s", partition, e)
         return f"Guardian partition detail for '{partition}' failed: {e}"
 
+    try:
+        payload = json.loads(data)
+    except (TypeError, ValueError):
+        return _truncate(data, 20000)
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("intents"), list):
+        return _truncate(data, 20000)
+
+    available_intents = _guardian_intent_names(payload)
+
+    if include == "summary":
+        summary = _guardian_partition_summary(payload, intent_name)
+        if summary is None:
+            return (
+                f"Error: intent '{intent_name}' not found in partition '{partition}'. "
+                f"Available intents: {', '.join(available_intents) or '(none)'}"
+            )
+        return _truncate(
+            json.dumps(summary, indent=2), _GUARDIAN_DETAIL_SUMMARY_MAX
+        )
+
+    if include == "manifest":
+        if not intent_name:
+            return (
+                "Error: include=manifest requires intent. "
+                "Use include=summary for the whole partition, or pass intent=<name>."
+            )
+        view = _guardian_intent_manifest_view(payload, intent_name, asset_name)
+        if view is None:
+            intent = _guardian_find_intent(payload, intent_name)
+            if intent is None:
+                return (
+                    f"Error: intent '{intent_name}' not found in partition "
+                    f"'{partition}'. Available intents: "
+                    f"{', '.join(available_intents) or '(none)'}"
+                )
+            return (
+                f"Error: asset '{asset_name}' not found in "
+                f"{partition}/{intent_name}. Available assets: "
+                f"{', '.join(_guardian_asset_names(intent)) or '(none)'}"
+            )
+        text = json.dumps(view, indent=2)
+        if len(text) <= _GUARDIAN_DETAIL_MANIFEST_MAX:
+            return text
+        return (
+            _truncate(text, _GUARDIAN_DETAIL_MANIFEST_MAX)
+            + "\nHint: add asset=<name> to narrow the manifest to one asset."
+        )
+
+    # include == "full": raw IntentDocument when an intent is selected, else
+    # the whole PartitionDetailResponse.
+    selected: object = payload
+    if intent_name:
+        intent = _guardian_find_intent(payload, intent_name)
+        if intent is None:
+            return (
+                f"Error: intent '{intent_name}' not found in partition "
+                f"'{partition}'. Available intents: "
+                f"{', '.join(available_intents) or '(none)'}"
+            )
+        selected = intent
+        if asset_name:
+            if asset_name not in _guardian_asset_names(intent):
+                return (
+                    f"Error: asset '{asset_name}' not found in "
+                    f"{partition}/{intent_name}. Available assets: "
+                    f"{', '.join(_guardian_asset_names(intent)) or '(none)'}"
+                )
+            selected = json.loads(json.dumps(intent))
+            manifest = selected.get("manifest")
+            if isinstance(manifest, dict):
+                selected["manifest"] = _guardian_filter_manifest(
+                    manifest, asset_name
+                )
+            selected["assets"] = [
+                asset
+                for asset in selected.get("assets", [])
+                if isinstance(asset, dict)
+                and str(asset.get("name")) == asset_name
+            ]
+    text = json.dumps(selected, indent=2)
+    if len(text) <= _GUARDIAN_DETAIL_FULL_MAX:
+        return text
+    return (
+        _truncate(text, _GUARDIAN_DETAIL_FULL_MAX)
+        + "\nHint: this was include=full. Use include=manifest with "
+        "intent=<name> (and asset=<name>) for a compact view."
+    )
+
+
 register(Skill(
     name="guardian_partition_detail", category="guardian",
-    description="Get full detail for a partition: manifest, runtime state, all intents with asset health, topology, recent events. Use this to drill into a specific partition.",
-    parameters={"partition": "Partition name (e.g. agent, monofs, doctor, monitoring, k8s-top)"},
+    description=(
+        "Get partition detail in scoped views. Default summary returns partition "
+        "health plus intent/asset names, types, status, ports, and replicas. "
+        "include=manifest with intent=<name> returns that intent's full manifest "
+        "and asset properties (optionally asset=<name>). include=full returns the "
+        "raw payload and can be large. Use the scoped views instead of relying on "
+        "truncated output."
+    ),
+    parameters={
+        "partition": "Partition name (e.g. agent, monofs, doctor, monitoring, k8s-top)",
+        "intent": "Optional intent name. When set without include, defaults to include=manifest.",
+        "asset": "Optional asset name; requires intent. Filters the manifest and runtime view.",
+        "include": "summary | manifest | full (default: summary, or manifest when intent is set)",
+    },
     status_prefix="Querying partition detail",
     handler=_tool_guardian_partition_detail,
 ))
@@ -1105,7 +1402,7 @@ register(Skill(
 async def _tool_guardian_catalog(_args: dict) -> str:
     try:
         data = await _guardian_get("/api/catalog")
-        return _truncate(data, 4000)
+        return _truncate(data, 20000)
     except Exception as e:
         logger.warning("guardian_catalog failed: %s", e)
         return f"Guardian catalog query failed: {e}"
@@ -2334,6 +2631,9 @@ async def _tool_monofs_search(args: dict) -> str:
     use_regex = args.get("regex", "").lower() in ("true", "1", "yes")
 
     cmd = ["monofs-session", "search", "--query", query, "--max-results", str(max(1, min(max_results, 100)))]
+    search_addr = str(get_runtime("monofs_search_addr") or "").strip()
+    if search_addr:
+        cmd.extend(["--search", search_addr])
     if file_pattern:
         cmd.extend(["--file-pattern", file_pattern])
     if case_sensitive:
