@@ -3,7 +3,7 @@
 set -euo pipefail
 
 MONOFS_MOUNT="${MONOFS_MOUNT:-/workspace}"
-MONOFS_OVERLAY="${MONOFS_OVERLAY:-/data/monofs-overlay}"
+MONOFS_OVERLAY="${MONOFS_OVERLAY:-${MONOFS_OVERLAY_DIR:-/data/monofs-overlay}}"
 export MONOFS_OVERLAY_DIR="${MONOFS_OVERLAY_DIR:-$MONOFS_OVERLAY}"
 
 mkdir -p "$MONOFS_MOUNT" "$MONOFS_OVERLAY"
@@ -20,6 +20,7 @@ if [ -n "${MONOFS_ROUTER:-}" ]; then
       --mount "$MONOFS_MOUNT" \
       --overlay "$MONOFS_OVERLAY" \
       --writable \
+      --virtual-monorepo \
       >/data/monofs-client.log 2>&1 &
     echo "[entrypoint] monofs-client started (pid $!)"
   fi

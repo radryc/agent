@@ -286,6 +286,30 @@ class NightwatchWorker:
             )
             evidence_ids.append(record["id"])
 
+        for draft in result.improvements:
+            improvement, created = await self.store.add_improvement(
+                incident_id=incident_id,
+                title=draft.title,
+                category=draft.category,
+                rationale=draft.rationale,
+                proposed_change=draft.proposed_change,
+                target=draft.target,
+                confidence=draft.confidence,
+            )
+            if created:
+                await self.store.append_event(
+                    incident_id=incident_id,
+                    type="improvement.suggested",
+                    summary=f"Observability improvement suggested: {draft.title}",
+                    payload={
+                        "improvement_id": improvement["id"],
+                        "category": draft.category,
+                        "target": draft.target,
+                        "confidence": draft.confidence,
+                    },
+                    evidence_ids=evidence_ids,
+                )
+
         for candidate in result.candidates:
             await self.store.add_finding(
                 incident_id=incident_id,

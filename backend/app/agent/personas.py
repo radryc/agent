@@ -40,6 +40,8 @@ STEVE_DEFAULT_PROMPT = (
     "`${intent.<intent>.outputs.<asset>.imageRef}`, keep secrets late-bound, run "
     "`guardianctl partition validate-local --root ./stratatools/partitions` and "
     "`guardianctl -format json intent plan --partition <p>`, then show the diff and ask before push/reconcile. "
+    "For LB Edge exposure, add a k8s payload with `guardian.intent/expose: \"true\"` to the LoadBalancer asset; "
+    "a healthy LoadBalancer asset without that annotation is not registered. "
     "Full playbook: `agent/.github/skills/guardian-partition-authoring/SKILL.md`.\n"
     "- Ask Strata views: use `strata_view_context(product, path)` to resolve the current Doctor, "
     "Guardian, MonoFS, or LB Edge view into live tools; `lb_edge_services` lists registered edge routes. "
@@ -64,7 +66,8 @@ OTTO_OPERATING_POLICY = (
     "- Before writing a LogQL selector, call doctor_logql_schema (or doctor_logql_label_values) to learn the real labels. Severity is the `level` label. Stored severity is uppercase while the exposed stream label is lowercase, so use `{guardian_partition=\"monofs\", level=~\"(?i)warn\"}` rather than a body filter for the word WARN. Partition/component/asset labels are `guardian_partition`, `guardian_component`, `guardian_asset`.\n"
     "- Doctor's canonical label vocabulary is defined in `doctor/internal/query/labels.go` (for example `guardian_partition`, `guardian_intent`, `guardian_asset`, `guardian_component`, `level`, `service`). Use `doctor_logql_schema` for live values and `monofs_search` to inspect the Doctor source when a label is unclear; do not guess from generic Loki conventions.\n"
     "- When the conversation starts with 'View context: <product> · <path>' (the Ask Strata button in Doctor, Guardian, MonoFS, or LB Edge), call strata_view_context first. It returns the view playbook and a live starter query; follow up with the recommended tools only when the starter result is insufficient.\n"
-    "- For LB Edge questions, use lb_edge_services to list registered routes and their external ports before guessing why an edge URL is unreachable.\n"
+    "- For LB Edge questions, use lb_edge_services to list registered routes and their external ports before guessing why an edge URL is unreachable. A healthy LoadBalancer asset is not enough: lb-k8s-agent registers a route only when guardian.intent/expose=\"true\" is on the source Endpoints or Service.\n"
+    "- Guardian partition detail is scoped: start with the default summary, then use include=manifest with intent=<name> (and asset=<name> for one asset) before concluding a manifest field or asset is missing. If any tool result ends with '...[truncated', state what is missing and narrow the query instead of guessing.\n"
     "- Prefer doctor_event_analysis + guardian detail for incident triage, monofs_search for code localization, and deploy tools only after an approved plan.\n"
     "- Nightwatch is the background shadow-mode SRE observer. It never executes actions. When asked what happened while the user was away, or why a recommendation/escalation was made, call nightwatch_overview / nightwatch_incidents / nightwatch_activity / nightwatch_incident_detail and answer from the ledger.\n"
     "- Doctor and Guardian calls use the backend OIDC/SSO token automatically. If a telemetry query returns 401/403, call agent_sso_status and report the SSO/auth issue instead of bypassing access controls. Remember that client-credentials tokens are the machine identity; per-user visibility requires the interactive SSO login.\n"
@@ -77,6 +80,7 @@ STEVE_OPERATING_POLICY = (
     "- Read-only infrastructure tools (doctor, guardian overview) only inform your work; never mutate infrastructure - that is Otto's lane.\n"
     "- Never claim a change is written, committed, or pushed without a tool result confirming it.\n"
     "- For telemetry or infrastructure facts, call the relevant doctor_*/guardian_* tool and answer only from its result. Never invent logs, metrics, traces, or health state.\n"
+    "- Use guardian_partition_detail scoped views (summary, then include=manifest with intent/asset) when you need asset properties for an authoring change. If a result ends with '...[truncated', narrow the query instead of assuming the payload is complete.\n"
 )
 
 # Read-only + coding tool set for Steve. Mutating infra tools (guardian_reconcile,

@@ -30,7 +30,14 @@ def mount_root() -> Path:
 
 
 def overlay_dir() -> Path:
-    return Path(str(get_runtime("monofs_overlay") or DEFAULT_OVERLAY)).expanduser()
+    configured = str(get_runtime("monofs_overlay") or "").strip()
+    if not configured:
+        configured = (
+            os.getenv("MONOFS_OVERLAY_DIR")
+            or os.getenv("MONOFS_OVERLAY")
+            or DEFAULT_OVERLAY
+        )
+    return Path(configured).expanduser()
 
 
 def router_addr() -> str:

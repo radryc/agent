@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
@@ -62,6 +63,61 @@ class WorkspaceSandboxTest(unittest.IsolatedAsyncioTestCase):
     async def test_status_reports_not_mounted(self):
         result = await workspace.workspace_status({})
         self.assertIn("Active: no", result)
+
+
+class SearchConfigTest(unittest.IsolatedAsyncioTestCase):
+    async def test_search_passes_configured_search_address(self):
+        config._runtime_overrides["monofs_search_addr"] = (
+            "search-index.monofs.svc.cluster.local:9100"
+        )
+        captured: dict[str, list[str]] = {}
+
+        async def fake_run(args, timeout=10.0, *, env=None):
+            captured["args"] = list(args)
+            return "found"
+
+        async def fake_env():
+            return {}
+
+        try:
+            with patch("app.agent.tools._run_subprocess", new=fake_run), patch(
+                "app.agent.tools._monofs_env", new=fake_env
+            ):
+                result = await execute_tool(
+                    "monofs_search",
+                    {"query": "heartbeat"},
+                    allowed={"monofs_search"},
+                )
+        finally:
+            config._runtime_overrides.pop("monofs_search_addr", None)
+
+        self.assertEqual(result, "found")
+        self.assertIn("--search", captured["args"])
+        self.assertIn(
+            "search-index.monofs.svc.cluster.local:9100", captured["args"]
+        )
+
+    async def test_search_uses_cli_default_without_search_address(self):
+        config._runtime_overrides.pop("monofs_search_addr", None)
+        captured: dict[str, list[str]] = {}
+
+        async def fake_run(args, timeout=10.0, *, env=None):
+            captured["args"] = list(args)
+            return "found"
+
+        async def fake_env():
+            return {}
+
+        with patch("app.agent.tools._run_subprocess", new=fake_run), patch(
+            "app.agent.tools._monofs_env", new=fake_env
+        ):
+            await execute_tool(
+                "monofs_search",
+                {"query": "heartbeat"},
+                allowed={"monofs_search"},
+            )
+
+        self.assertNotIn("--search", captured["args"])
 
 
 class MutationGateTest(unittest.IsolatedAsyncioTestCase):

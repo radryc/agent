@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
@@ -14,12 +15,14 @@ import {
   Search,
   ShieldAlert,
   Sparkles,
+  Wrench,
 } from "lucide-react";
 import { api } from "../api/client";
 import type {
   NightwatchAssignment,
   NightwatchEvent,
   NightwatchEvidence,
+  NightwatchImprovement,
   NightwatchIncident,
   NightwatchIncidentDetail,
   NightwatchOverview,
@@ -109,7 +112,72 @@ function EvidenceCard({ evidence }: { evidence: NightwatchEvidence }) {
   );
 }
 
-function IncidentDetail({ incident }: { incident: NightwatchIncidentDetail }) {
+function ImprovementCard({
+  improvement,
+  busy,
+  onHandoff,
+}: {
+  improvement: NightwatchImprovement;
+  busy: boolean;
+  onHandoff: () => void;
+}) {
+  const handedOff = improvement.status === "handed_off";
+  return (
+    <div className="rounded-lg border border-dark-600 bg-dark-800/60 px-3 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Wrench size={13} className="text-violet-400" />
+            <p className="text-sm font-medium text-gray-200">{improvement.title}</p>
+            <span className="rounded bg-dark-600 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-gray-400">
+              {improvement.category}
+            </span>
+          </div>
+          {improvement.target && (
+            <p className="mt-1 font-mono text-[10px] text-gray-500">{improvement.target}</p>
+          )}
+        </div>
+        <span className="s-badge">{Math.round((improvement.confidence || 0) * 100)}%</span>
+      </div>
+      {improvement.rationale && (
+        <p className="mt-2 text-xs leading-relaxed text-gray-400">{improvement.rationale}</p>
+      )}
+      <div className="mt-2 rounded border border-dark-600 bg-dark-900/60 px-2.5 py-2">
+        <p className="text-[10px] uppercase tracking-wide text-gray-600">Proposed change</p>
+        <p className="mt-1 whitespace-pre-wrap text-xs text-gray-300">{improvement.proposed_change}</p>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="s-btn s-btn-secondary"
+          disabled={busy || handedOff}
+          onClick={onHandoff}
+        >
+          <Sparkles size={13} />
+          {handedOff ? "Steve proposal created" : busy ? "Creating session…" : "Ask Software Steve for a diff"}
+        </button>
+        {improvement.session_id && (
+          <a className="text-xs text-violet-300 hover:text-violet-200" href={`/chat/${improvement.session_id}`}>
+            Open Steve session
+          </a>
+        )}
+        <span className="text-[10px] text-gray-600">
+          Proposal-only; nothing is committed or pushed.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function IncidentDetail({
+  incident,
+  onHandoff,
+  proposalBusy,
+}: {
+  incident: NightwatchIncidentDetail;
+  onHandoff: (improvement: NightwatchImprovement) => void;
+  proposalBusy: string | null;
+}) {
   const confidence = Math.max(0, Math.min(1, incident.confidence ?? 0));
   const escalated =
     incident.escalation_status === "recommended" || incident.escalation_status === "escalated";
@@ -241,6 +309,35 @@ function IncidentDetail({ incident }: { incident: NightwatchIncidentDetail }) {
         </div>
       </div>
 
+      <div className="s-card">
+        <div className="s-card__header">
+          <div>
+            <h3 className="s-card__title">Improvement proposals</h3>
+            <p className="s-meta mt-1">
+              Observability gaps found during the investigation. Software Steve can turn a
+              proposal into a reviewable workspace diff.
+            </p>
+          </div>
+          <span className="s-badge">{incident.improvements?.length ?? 0}</span>
+        </div>
+        <div className="s-card__body space-y-2">
+          {(!incident.improvements || incident.improvements.length === 0) && (
+            <p className="s-empty">
+              No observability improvements suggested. Re-run the investigation after the next
+              alert evaluation.
+            </p>
+          )}
+          {(incident.improvements ?? []).map((improvement) => (
+            <ImprovementCard
+              key={improvement.id}
+              improvement={improvement}
+              busy={proposalBusy === improvement.id}
+              onHandoff={() => onHandoff(improvement)}
+            />
+          ))}
+        </div>
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="s-card">
           <div className="s-card__header">
@@ -323,6 +420,7 @@ function IncidentDetail({ incident }: { incident: NightwatchIncidentDetail }) {
 }
 
 export default function NightwatchPage() {
+  const navigate = useNavigate();
   const [overview, setOverview] = useState<NightwatchOverview | null>(null);
   const [assignments, setAssignments] = useState<NightwatchAssignment[]>([]);
   const [incidents, setIncidents] = useState<NightwatchIncident[]>([]);
@@ -333,6 +431,8 @@ export default function NightwatchPage() {
   const [partitionFilter, setPartitionFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [proposalBusy, setProposalBusy] = useState<string | null>(null);
+  const [proposalError, setProposalError] = useState("");
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -395,6 +495,40 @@ export default function NightwatchPage() {
     () => Array.from(new Set(incidents.map((incident) => incident.partition))).sort(),
     [incidents]
   );
+
+  const handoffToSteve = async (
+    incident: NightwatchIncidentDetail,
+    improvement: NightwatchImprovement
+  ) => {
+    setProposalBusy(improvement.id);
+    setProposalError("");
+    const alert = incident.alerts?.[0];
+    try {
+      const result = await api.createSteveProposal({
+        incident_id: incident.id,
+        incident_title: incident.title,
+        partition: incident.partition,
+        severity: incident.severity,
+        summary: incident.summary || "",
+        alertname: alert?.alertname || incident.title,
+        labels: alert?.labels || {},
+        improvement: {
+          id: improvement.id,
+          title: improvement.title,
+          category: improvement.category,
+          rationale: improvement.rationale,
+          proposed_change: improvement.proposed_change,
+          target: improvement.target,
+          confidence: improvement.confidence,
+        },
+      });
+      navigate(`/chat/${result.session_id}`);
+    } catch (err) {
+      setProposalError(err instanceof Error ? err.message : "Could not create the Steve proposal");
+    } finally {
+      setProposalBusy(null);
+    }
+  };
 
   return (
     <div className="h-full overflow-y-auto bg-dark-900 p-4 sm:p-6">
@@ -521,6 +655,12 @@ export default function NightwatchPage() {
               </span>
             </div>
 
+            {proposalError && (
+              <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                {proposalError}
+              </div>
+            )}
+
             <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
               <div className="s-card min-w-0">
                 <div className="s-card__header">
@@ -582,7 +722,13 @@ export default function NightwatchPage() {
 
               <div className="min-w-0">
                 {detailLoading && <p className="s-empty">Loading incident…</p>}
-                {!detailLoading && detail && <IncidentDetail incident={detail} />}
+                {!detailLoading && detail && (
+                  <IncidentDetail
+                    incident={detail}
+                    proposalBusy={proposalBusy}
+                    onHandoff={(improvement) => void handoffToSteve(detail, improvement)}
+                  />
+                )}
                 {!detailLoading && !detail && (
                   <div className="s-card">
                     <div className="s-card__body flex flex-col items-center gap-2 py-12 text-center">

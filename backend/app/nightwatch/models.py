@@ -108,6 +108,25 @@ class FindingRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class ImprovementRow(Base):
+    __tablename__ = "improvements"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    incident_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    category: Mapped[str] = mapped_column(String, default="metrics", nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    proposed_change: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    target: Mapped[str] = mapped_column(String, default="", nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="suggested", nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+
 class BriefRow(Base):
     __tablename__ = "briefs"
 

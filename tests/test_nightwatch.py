@@ -467,3 +467,89 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImprovementTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.store = NightwatchStore(f"sqlite+aiosqlite:///{self.tmp.name}")
+        await self.store.init()
+
+    async def asyncTearDown(self):
+        await self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    async def test_improvement_dedup_and_handoff(self):
+        incident = await self.store.create_incident(
+            partition="doctor",
+            correlation_key="doctor/GuardianPusherUnhealthy",
+            title="GuardianPusherUnhealthy",
+            severity="critical",
+        )
+        first, created = await self.store.add_improvement(
+            incident_id=incident["id"],
+            title="Expose pusher heartbeat",
+            category="metrics",
+            rationale="missing metric",
+            proposed_change="add gauge",
+            target="guardian",
+            confidence=0.8,
+        )
+        self.assertTrue(created)
+        again, created = await self.store.add_improvement(
+            incident_id=incident["id"],
+            title="Expose pusher heartbeat",
+            category="metrics",
+            rationale="duplicate",
+            proposed_change="duplicate",
+        )
+        self.assertFalse(created)
+        self.assertEqual(first["id"], again["id"])
+
+        updated = await self.store.mark_improvement_handoff(first["id"], "session-123")
+        self.assertEqual(updated["status"], "handed_off")
+        self.assertEqual(updated["session_id"], "session-123")
+
+        detail = await self.store.get_incident(incident["id"])
+        self.assertEqual(len(detail["improvements"]), 1)
+        self.assertEqual(detail["improvements"][0]["status"], "handed_off")
+        event_types = [event["type"] for event in detail["events"]]
+        self.assertIn("improvement.handed_off", event_types)
+
+    def test_heuristics_cover_pusher_metrics_and_missing_standard_metrics(self):
+        evidence = [
+            EvidenceDraft("metric", 'up{guardian_partition="doctor"}', None, None, "no samples", "h", "doctor"),
+            EvidenceDraft("metric", 'guardian_probe_up{guardian_partition="doctor"}', None, None, "5 series; service=doctor", "h", "doctor"),
+            EvidenceDraft("metric", 'count by (__name__) ({guardian_partition="doctor"})', None, None, "3 series; __name__=doctor_component_up", "h", "doctor"),
+            EvidenceDraft("log", "logs partition=doctor (all records)", None, None, "3 records; hello", "h", "doctor"),
+            EvidenceDraft("log", "logs partition=doctor q=error", None, None, "0 records", "h", "doctor"),
+            EvidenceDraft("trace", "traces partition=doctor", None, None, "10 traces; services=doctor.query.query", "h", "doctor"),
+        ]
+        suggestions = Investigator._derive_improvements(
+            {"partition": "doctor", "title": "GuardianPusherUnhealthy"},
+            [{"alertname": "GuardianPusherUnhealthy", "labels": {"guardian_pusher": "k8s-main"}}],
+            evidence,
+        )
+        titles = [item.title for item in suggestions]
+        self.assertTrue(any("heartbeat" in title.lower() for title in titles))
+        self.assertTrue(any("structured" in title.lower() or "log" in title.lower() for title in titles))
+        self.assertTrue(any("standard process" in title.lower() for title in titles))
+        self.assertTrue(any("doctor_*" in title for title in titles))
+
+    def test_llm_improvement_validation_rejects_empty_changes(self):
+        raw = [
+            {"title": "No change", "proposed_change": ""},
+            {
+                "title": "Add metric",
+                "category": "metrics",
+                "rationale": "gap",
+                "proposed_change": "emit gauge",
+                "target": "doctor",
+                "confidence": 2,
+            },
+        ]
+        parsed = Investigator._llm_improvements(raw)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].title, "Add metric")
+        self.assertEqual(parsed[0].confidence, 1.0)

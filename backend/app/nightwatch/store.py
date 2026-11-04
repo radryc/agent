@@ -15,6 +15,7 @@ from app.nightwatch.models import (
     EventRow,
     EvidenceRow,
     FindingRow,
+    ImprovementRow,
     IncidentAlertRow,
     IncidentRow,
 )
@@ -270,11 +271,19 @@ class NightwatchStore:
                 .where(FindingRow.incident_id == incident_id)
                 .order_by(FindingRow.created_at)
             )
+            improvements = await db.execute(
+                select(ImprovementRow)
+                .where(ImprovementRow.incident_id == incident_id)
+                .order_by(ImprovementRow.created_at)
+            )
             item = self._incident_dict(row)
             item["alerts"] = [self._alert_dict(a) for a in alerts.scalars().all()]
             item["events"] = [self._event_dict(e) for e in events.scalars().all()]
             item["evidence"] = [self._evidence_dict(e) for e in evidence.scalars().all()]
             item["findings"] = [self._finding_dict(f) for f in findings.scalars().all()]
+            item["improvements"] = [
+                self._improvement_dict(i) for i in improvements.scalars().all()
+            ]
             return item
 
     # ------------------------------------------------------------------
@@ -462,6 +471,78 @@ class NightwatchStore:
             return self._finding_dict(row)
 
     # ------------------------------------------------------------------
+    # Improvement proposals
+    # ------------------------------------------------------------------
+
+    async def add_improvement(
+        self,
+        *,
+        incident_id: str,
+        title: str,
+        category: str = "metrics",
+        rationale: str = "",
+        proposed_change: str = "",
+        target: str = "",
+        confidence: float = 0.0,
+    ) -> tuple[dict, bool]:
+        title = title.strip()
+        async with self._session() as db:
+            result = await db.execute(
+                select(ImprovementRow).where(
+                    ImprovementRow.incident_id == incident_id,
+                    ImprovementRow.title == title,
+                )
+            )
+            existing = result.scalar_one_or_none()
+            if existing is not None:
+                return self._improvement_dict(existing), False
+            row = ImprovementRow(
+                id=f"imp-{uuid.uuid4().hex}",
+                incident_id=incident_id,
+                title=title,
+                category=category.strip().lower() or "metrics",
+                rationale=rationale,
+                proposed_change=proposed_change,
+                target=target,
+                confidence=max(0.0, min(1.0, confidence)),
+            )
+            db.add(row)
+            await db.commit()
+            return self._improvement_dict(row), True
+
+    async def list_improvements(self, incident_id: str) -> list[dict]:
+        async with self._session() as db:
+            result = await db.execute(
+                select(ImprovementRow)
+                .where(ImprovementRow.incident_id == incident_id)
+                .order_by(ImprovementRow.created_at)
+            )
+            return [self._improvement_dict(row) for row in result.scalars().all()]
+
+    async def get_improvement(self, improvement_id: str) -> dict | None:
+        async with self._session() as db:
+            row = await db.get(ImprovementRow, improvement_id)
+            return self._improvement_dict(row) if row else None
+
+    async def mark_improvement_handoff(self, improvement_id: str, session_id: str) -> dict | None:
+        async with self._session() as db:
+            row = await db.get(ImprovementRow, improvement_id)
+            if row is None:
+                return None
+            row.status = "handed_off"
+            row.session_id = session_id
+            row.updated_at = datetime.utcnow()
+            await self._append_event(
+                db,
+                incident_id=row.incident_id,
+                type="improvement.handed_off",
+                summary=f"Software Steve proposal session created for {row.title}",
+                payload={"improvement_id": row.id, "session_id": session_id},
+            )
+            await db.commit()
+            return self._improvement_dict(row)
+
+    # ------------------------------------------------------------------
     # Briefs / activity
     # ------------------------------------------------------------------
 
@@ -562,6 +643,9 @@ class NightwatchStore:
                 await db.execute(delete(EventRow).where(EventRow.incident_id == row.id))
                 await db.execute(delete(EvidenceRow).where(EvidenceRow.incident_id == row.id))
                 await db.execute(delete(FindingRow).where(FindingRow.incident_id == row.id))
+                await db.execute(
+                    delete(ImprovementRow).where(ImprovementRow.incident_id == row.id)
+                )
                 await db.execute(delete(IncidentAlertRow).where(IncidentAlertRow.incident_id == row.id))
                 await db.delete(row)
             await db.commit()
@@ -654,4 +738,21 @@ class NightwatchStore:
             "rationale": row.rationale,
             "handoff_status": row.handoff_status,
             "created_at": _iso(row.created_at),
+        }
+
+    @staticmethod
+    def _improvement_dict(row: ImprovementRow) -> dict:
+        return {
+            "id": row.id,
+            "incident_id": row.incident_id,
+            "title": row.title,
+            "category": row.category,
+            "rationale": row.rationale,
+            "proposed_change": row.proposed_change,
+            "target": row.target,
+            "confidence": row.confidence,
+            "status": row.status,
+            "session_id": row.session_id,
+            "created_at": _iso(row.created_at),
+            "updated_at": _iso(row.updated_at),
         }

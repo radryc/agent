@@ -47,7 +47,11 @@ catalog over memory.
    ```
    When running inside the agent, prefer the native tools:
    `guardian_catalog`, `guardian_asset_describe`,
-   `guardian_partition_validate`, and `guardian_intent_plan`.
+   `guardian_partition_validate`, and `guardian_intent_plan`. To inspect the
+   live intent you are about to change, use
+   `guardian_partition_detail(partition=..., intent=..., include="manifest")`;
+   add `asset=...` to narrow to one asset. Do not rely on a full partition dump
+   that ends with `...[truncated`.
 3. Find the intended pusher, cluster, and namespace. Do not invent them.
    - inspect existing intents for `targetPusher` and `target`
    - check `kubectl get pods -n guardian`
@@ -277,6 +281,55 @@ guardianctl partition push --dir stratatools/partitions/shared \
 Read `guardianctl asset describe --type <Type>` for the exact schema. Do not
 guess listener or protocol fields.
 
+A `LoadBalancer` asset creates or observes a Kubernetes Service. It does **not**
+by itself register the route with LB Edge: `lb-k8s-agent` registers a Service
+(via its Endpoints) only when `guardian.intent/expose: "true"` is present on the
+Endpoints or the parent Service.
+
+To expose a service through LB Edge, attach a k8s payload to the
+`LoadBalancer` asset:
+
+```yaml
+- type: LoadBalancer
+  name: app-edge
+  version: "1"
+  dependsOn:
+    - app
+  payload:
+    k8s: /partitions/example/payloads/edge.k8s.yaml
+  properties:
+    serviceType: LoadBalancer
+    listeners:
+      - name: http
+        port: 8080
+        protocol: TCP
+        description: App UI/API
+    targets:
+      - app
+```
+
+```yaml
+# payloads/edge.k8s.yaml
+serviceAnnotations:
+  guardian.intent/expose: "true"
+  guardian.intent/service-name: app-edge
+  # optional: pin the host-facing port
+  guardian.intent/external-port: "18090"
+```
+
+Rules:
+
+- `targets` must reference the `Compute` asset(s) that receive traffic.
+- `listeners[].port` is the backend/container port. `externalPort` pins the
+  host-facing port; `dynamic: true` asks LB Edge to allocate one. Leave both
+  unset to let LB Edge allocate automatically.
+- `serviceType: LoadBalancer` is the platform exposure mode. On clusters without
+  a cloud load balancer (for example kind), the Service's external IP stays
+  `<pending>`; the working path is the LB Edge proxy.
+- A `LoadBalancer` asset can be Healthy and still be absent from
+  `lb_edge_services` when the expose annotation is missing. Verify with
+  `lb_edge_services`, not just partition health.
+
 ### Database, SQLDatabase, ObjectStore, CDKStack
 
 These are AWS-oriented assets. Use `guardianctl asset describe --type <Type>`
@@ -359,6 +412,8 @@ Proposal-first:
 - [ ] partition manifest valid and correctly named
 - [ ] intents declare joins, dependsOn, and target pusher/cluster/namespace
 - [ ] assets use catalog-backed types and valid properties
+- [ ] LoadBalancer assets that must be reachable carry
+      `guardian.intent/expose: "true"` and appear in `lb_edge_services`
 - [ ] secrets remain late-bound
 - [ ] validation and plan run
 - [ ] user approved before mutation

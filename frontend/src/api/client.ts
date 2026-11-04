@@ -299,4 +299,27 @@ export const api = {
       `/api/nightwatch/activity${query ? `?${query}` : ""}`
     );
   },
+
+  createSteveProposal: (body: {
+    incident_id: string;
+    incident_title: string;
+    partition: string;
+    severity: string;
+    summary: string;
+    alertname: string;
+    labels: Record<string, string>;
+    improvement: {
+      id: string;
+      title: string;
+      category: string;
+      rationale: string;
+      proposed_change: string;
+      target: string;
+      confidence: number;
+    };
+  }) =>
+    request<{ session_id: string; status: string }>("/api/agent/proposal", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };

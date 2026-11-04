@@ -53,8 +53,16 @@ and runs a live starter query using the native tools.
 
 - `guardian_overview` for the partition dashboard.
 - `guardian_partition_detail(partition=...)` when the URL has `?partition=...`.
-- `guardian_intent_activity` when the view names an intent.
+  The default is a compact summary (health plus asset names/types/ports).
+- When the view names an intent, use
+  `guardian_partition_detail(partition=..., intent=..., include="manifest")`
+  to read the full manifest and asset properties. Add `asset=...` to narrow to
+  one asset.
+- `guardian_intent_activity` when the view names an intent and you need drift,
+  readiness, or recent task logs rather than the manifest.
 - `doctor_guardian_events` for deployment/reconcile history.
+- If a result ends with `...[truncated`, do not treat it as complete. Narrow the
+  query (summary, then one intent, then one asset) and say what was omitted.
 
 ### MonoFS
 
@@ -68,7 +76,11 @@ and runs a live starter query using the native tools.
   backends registered by `lb-k8s-agent`.
 - If a route is missing, check the source Service annotations
   (`guardian.intent/expose`, `guardian.intent/service-name`,
-  `guardian.intent/external-port`) and `lb-k8s-agent` logs.
+  `guardian.intent/external-port`) and `lb-k8s-agent` logs. Registration is
+  annotation-driven; it is not declared in the `lb-edge` partition manifest.
+- A healthy `LoadBalancer` asset inside its own partition does not mean the
+  route is registered. The Kubernetes Service must carry
+  `guardian.intent/expose: "true"` (on the Endpoints or the Service).
 
 ## Evidence rules
 
