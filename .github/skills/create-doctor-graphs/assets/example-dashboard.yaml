@@ -1,0 +1,83 @@
+version: doctor.dashboard/v1
+id: agent-overview
+title: Agent overview
+description: Request rate, latency, error ratio, memory, and recent errors for the agent partition.
+tenant: default
+tags: [agent, red, overview]
+defaultTimeRange: 1h
+refreshInterval: 30s
+partitions: [agent]
+variables:
+  - name: partition
+    label: Partition
+    type: partition
+    defaultValue: agent
+    includeAll: true
+layout:
+  - id: request-rate
+    title: Request rate
+    kind: timeseries
+    gridPos: {x: 0, y: 0, w: 6, h: 6}
+    queries:
+      - refId: A
+        datasource: prometheus
+        expr: >-
+          sum by (service) (
+            rate(http_server_request_duration_seconds_count{guardian_partition=~"$partition"}[$__rate_interval])
+          )
+        legendFormat: "{{service}}"
+    visualization:
+      displayMode: line
+      unit: reqps
+  - id: p95-latency
+    title: p95 latency
+    kind: timeseries
+    gridPos: {x: 6, y: 0, w: 6, h: 6}
+    queries:
+      - refId: A
+        datasource: prometheus
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le, service) (
+              rate(http_server_request_duration_seconds_bucket{guardian_partition=~"$partition"}[$__rate_interval])
+            )
+          )
+        legendFormat: "{{service}}"
+    visualization:
+      displayMode: line
+      unit: seconds
+  - id: error-ratio
+    title: Error ratio
+    kind: gauge
+    gridPos: {x: 0, y: 6, w: 3, h: 4}
+    queries:
+      - refId: A
+        datasource: prometheus
+        expr: >-
+          100 * sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5..",guardian_partition=~"$partition"}[$__rate_interval]))
+          / clamp_min(sum(rate(http_server_request_duration_seconds_count{guardian_partition=~"$partition"}[$__rate_interval])), 0.001)
+        legendFormat: error ratio
+    visualization:
+      unit: percent
+      thresholds:
+        - {value: 0, color: green}
+        - {value: 5, color: amber}
+        - {value: 10, color: red}
+  - id: memory
+    title: Resident memory
+    kind: stat
+    gridPos: {x: 3, y: 6, w: 3, h: 4}
+    queries:
+      - refId: A
+        datasource: prometheus
+        expr: sum(process_resident_memory_bytes{guardian_partition=~"$partition"})
+    visualization:
+      unit: bytes
+  - id: error-logs
+    title: Recent error logs
+    kind: logs
+    gridPos: {x: 6, y: 6, w: 6, h: 4}
+    queries:
+      - refId: A
+        datasource: loki
+        expr: '{guardian_partition=~"$partition"} |= "error"'

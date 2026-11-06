@@ -17,13 +17,16 @@ services:
     volumes:
       - llm-models:/models
     environment:
+      - MODEL_PRESET=${MODEL_PRESET:-}
       - MODEL_REPO=${MODEL_REPO:-unsloth/gemma-4-E4B-it-GGUF}
       - MODEL_FILE=${MODEL_FILE:-gemma-4-E4B-it-Q4_K_M.gguf}
       - MODEL_DIR=/models
-      - CTX_SIZE=${CTX_SIZE:-8192}
+      - CTX_SIZE=${CTX_SIZE:-32768}
       - N_GPU_LAYERS=${N_GPU_LAYERS:-99}
       - THREADS=${THREADS:-4}
       - PARALLEL=${PARALLEL:-1}
+      - REASONING_FORMAT=${REASONING_FORMAT:-deepseek}
+      - EXTRA_ARGS=${EXTRA_ARGS:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -58,6 +61,20 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       LLM_BASE_URL: http://llm:8080
+      LLM_MODEL: ${LLM_MODEL:-gemma-4-E4B-it}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      # Grammar-constrained tool calls (llama.cpp GBNF) + hybrid escalation.
+      LLM_GRAMMAR_ENABLED: ${LLM_GRAMMAR_ENABLED:-true}
+      LLM_TOOL_GRAMMAR: ${LLM_TOOL_GRAMMAR:-}
+      LLM_REQUEST_EXTRA: ${LLM_REQUEST_EXTRA:-}
+      LLM_HYBRID_ENABLED: ${LLM_HYBRID_ENABLED:-true}
+      LLM_HYBRID_AFTER_ROUNDS: ${LLM_HYBRID_AFTER_ROUNDS:-3}
+      LLM_MAX_TOOL_ROUNDS: ${LLM_MAX_TOOL_ROUNDS:-5}
+      LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-https://api.deepseek.com}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-deepseek-chat}
+      LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
+      LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-}
+      LLM_PROVIDERS_JSON: ${LLM_PROVIDERS_JSON:-}
       GUARDIAN_URL: ${GUARDIAN_URL:-http://host.docker.internal:8090}
       DOCTOR_QUERY_URL: ${DOCTOR_QUERY_URL:-http://host.docker.internal:18080}
       AGENT_NAME: ${AGENT_NAME:-OutageOtto}

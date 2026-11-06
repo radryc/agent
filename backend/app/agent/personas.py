@@ -4,6 +4,12 @@ import logging
 from dataclasses import dataclass
 
 from app.config import get_runtime, settings
+from app.llm.client import (
+    fallback_ready,
+    profile_available,
+    profile_label,
+    provider_profiles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +56,12 @@ STEVE_DEFAULT_PROMPT = (
     "`doctor_traces_recent`, and `doctor_trace_detail`; scope to `guardian_partition=agent` or "
     "`service=~\"agent\\..*\"`; Doctor and Guardian calls use the backend OIDC/SSO token automatically, "
     "so check `GET /api/auth/status` if a query returns 401, or use `kubectl -n agent logs/describe` and report "
-    "the limitation. Full playbook: `agent/.github/skills/query-agent-telemetry/SKILL.md`."
+    "the limitation. Full playbook: `agent/.github/skills/query-agent-telemetry/SKILL.md`.\n"
+    "- Graph authoring: when asked to create graphs, panels, or dashboards, discover metric names with "
+    "`doctor_metrics_names`/`doctor_metrics_labels`, verify the PromQL with `doctor_metrics_query`, then write "
+    "a Saved Graph Bundle v1 or Doctor Dashboard v1 JSON/YAML file. Validate it with "
+    "`agent/.github/skills/create-doctor-graphs/scripts/validate_graph_file.py`. Full playbook: "
+    "`agent/.github/skills/create-doctor-graphs/SKILL.md`."
 )
 
 OTTO_OPERATING_POLICY = (
@@ -71,6 +82,7 @@ OTTO_OPERATING_POLICY = (
     "- Prefer doctor_event_analysis + guardian detail for incident triage, monofs_search for code localization, and deploy tools only after an approved plan.\n"
     "- Nightwatch is the background shadow-mode SRE observer. It never executes actions. When asked what happened while the user was away, or why a recommendation/escalation was made, call nightwatch_overview / nightwatch_incidents / nightwatch_activity / nightwatch_incident_detail and answer from the ledger.\n"
     "- Doctor and Guardian calls use the backend OIDC/SSO token automatically. If a telemetry query returns 401/403, call agent_sso_status and report the SSO/auth issue instead of bypassing access controls. Remember that client-credentials tokens are the machine identity; per-user visibility requires the interactive SSO login.\n"
+    "- For graph, chart, panel, saved-graph, or dashboard creation requests, follow the create-doctor-graphs skill. Discover real metric names and labels first, run the PromQL to prove it returns data, then emit a Saved Graph Bundle v1 (simple line graphs) or Doctor Dashboard v1 (gauges/stat/table/logs/traces/multi-panel). Every graph/dashboard must declare the partitions it affects; dashboard writes require maintainer/admin on every listed partition. Validate the file with doctor_graph_validate before answering. Never invent metric names or claim a graph works without query evidence.\n"
 )
 
 STEVE_OPERATING_POLICY = (
@@ -81,6 +93,7 @@ STEVE_OPERATING_POLICY = (
     "- Never claim a change is written, committed, or pushed without a tool result confirming it.\n"
     "- For telemetry or infrastructure facts, call the relevant doctor_*/guardian_* tool and answer only from its result. Never invent logs, metrics, traces, or health state.\n"
     "- Use guardian_partition_detail scoped views (summary, then include=manifest with intent/asset) when you need asset properties for an authoring change. If a result ends with '...[truncated', narrow the query instead of assuming the payload is complete.\n"
+    "- When asked to create a graph, panel, or dashboard, read the create-doctor-graphs skill, discover the metric with doctor_metrics_names, verify the query with doctor_metrics_query, declare every affected partition, write the JSON/YAML file, and validate it with doctor_graph_validate. Dashboard storage requires maintainer/admin on every listed partition. Do not invent metric names.\n"
 )
 
 # Read-only + coding tool set for Steve. Mutating infra tools (guardian_reconcile,
@@ -116,6 +129,7 @@ STEVE_TOOL_NAMES: tuple[str, ...] = (
     "doctor_metrics_names",
     "doctor_metrics_labels",
     "doctor_metrics_query",
+    "doctor_graph_validate",
     "doctor_traces_recent",
     "doctor_trace_detail",
     "doctor_traceql_query",
@@ -229,13 +243,16 @@ class EngineStatus:
 
 
 def _local_engine() -> EngineStatus:
-    model = str(get_runtime("llm_model") or "gemma-4-E4B-it")
+    model = str(get_runtime("llm_model") or settings.llm_model)
     base_url = str(get_runtime("llm_base_url") or settings.llm_base_url).strip()
+    detail = f"OpenAI-compatible endpoint at {base_url}"
+    if fallback_ready():
+        detail += f"; hybrid escalation to {profile_label('fallback')}"
     return EngineStatus(
         "local",
         f"Model ({model})",
         True,
-        f"OpenAI-compatible endpoint at {base_url}",
+        detail,
     )
 
 
@@ -278,11 +295,20 @@ async def resolve_engine(persona_id: str) -> EngineStatus:
     requested = str(get_runtime("steve_engine") or "").strip().lower()
     if requested == "auto":
         requested = ""
+    if requested and requested in {name.lower() for name in provider_profiles()}:
+        requested = f"provider:{requested}"
 
     opencode = await _opencode_engine()
     deepseek = _deepseek_engine()
     local = _local_engine()
 
+    if requested.startswith("provider:"):
+        return EngineStatus(
+            requested,
+            profile_label(requested),
+            profile_available(requested),
+            f"Named provider profile {requested}",
+        )
     if requested == "opencode":
         return opencode
     if requested == "deepseek":
@@ -295,3 +321,13 @@ async def resolve_engine(persona_id: str) -> EngineStatus:
         if engine.available:
             return engine
     return local
+
+
+def engine_profile(engine_id: str) -> str:
+    """Map a resolved engine id to an LLM client profile."""
+    engine_id = str(engine_id or "").strip()
+    if engine_id == "deepseek":
+        return "steve"
+    if engine_id.startswith("provider:"):
+        return engine_id
+    return "local"

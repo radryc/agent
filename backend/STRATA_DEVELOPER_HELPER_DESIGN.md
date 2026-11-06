@@ -20,6 +20,9 @@ The backend skill registry (`app/agent/tools.py`) now includes:
   - `strata_stack_check` — verifies Doctor, Guardian, `monofs-session`, and `guardianctl` availability.
 - **Doctor analysis**
   - `doctor_event_analysis` — summarizes Guardian events from Doctor (failure/success/unknown counts, impacted partitions, recent failure signals).
+- **Graph authoring**
+  - `doctor_graph_validate` — validates Saved Graph Bundle v1, Doctor Dashboard v1, and dashboard bundle JSON/YAML files before import.
+  - Skill `create-doctor-graphs` — discovers metrics, verifies queries, generates graph/dashboard files, and validates them.
 - **Guardian deployment**
   - `guardian_deploy_partition` — deploy workflow via `guardianctl` (`push` -> optional `reconcile` -> optional `wait`), with plan-only default.
 - **Remote VS Code**

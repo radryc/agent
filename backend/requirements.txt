@@ -13,3 +13,4 @@ opentelemetry-instrumentation-fastapi==0.54b0
 duckduckgo-search==8.0.1
 google-genai==1.16.1
 opencode-agent-sdk==0.4.12
+PyYAML==6.0.3

@@ -13,6 +13,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Awaitable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
@@ -20,6 +21,7 @@ from duckduckgo_search import DDGS
 import httpx
 
 from app.config import get_runtime, runtime_bool, settings
+from app.agent import graph_validation
 from app.agent import workspace as workspace_tools
 from app.auth.oidc import oidc
 
@@ -2358,6 +2360,46 @@ register(Skill(
     parameters={"match": "Optional PromQL series selector, e.g. up{guardian_partition=\"monofs\"}"},
     status_prefix="Listing Doctor metric labels",
     handler=_tool_doctor_metrics_labels,
+))
+
+
+async def _tool_doctor_graph_validate(args: dict) -> str:
+    path = str(args.get("path") or "").strip()
+    content = args.get("content")
+    fmt = str(args.get("format") or "").strip().lower()
+
+    label = path or "<content>"
+    try:
+        if content is not None and str(content).strip():
+            document = graph_validation.parse_text(str(content), fmt)
+        elif path:
+            target = Path(path).expanduser()
+            if not target.is_absolute():
+                target = workspace_tools.mount_root() / target
+            if not target.is_file():
+                return f"Error: graph file not found: {target}"
+            label = str(target)
+            document = graph_validation.load_document(target)
+        else:
+            return "Error: provide path=<workspace file> or content=<JSON/YAML>"
+    except Exception as exc:
+        return f"Error: could not parse {label}: {exc}"
+
+    report = graph_validation.Report()
+    kind = graph_validation.validate_document(document, report)
+    return graph_validation.render_report(report, kind, label)
+
+
+register(Skill(
+    name="doctor_graph_validate", category="doctor",
+    description="Validate a Saved Graph Bundle v1, Doctor Dashboard v1, or dashboard bundle JSON/YAML file before import. Returns OK plus the detected format, or field-level errors. Use after generating a graph file and before telling the user it is ready.",
+    parameters={
+        "path": "Workspace-relative or absolute file path (optional if content is provided)",
+        "content": "Raw JSON/YAML graph file content (optional if path is provided)",
+        "format": "json or yaml; optional for content, otherwise auto-detected",
+    },
+    status_prefix="Validating Doctor graph file",
+    handler=_tool_doctor_graph_validate,
 ))
 
 

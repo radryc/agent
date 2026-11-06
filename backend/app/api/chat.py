@@ -12,6 +12,7 @@ from app.agent.loop import run_agent_turn, ensure_session
 from app.agent.opencode import run_opencode
 from app.agent.personas import (
     DEFAULT_PERSONA_ID,
+    engine_profile,
     get_persona,
     persona_system_prompt,
     resolve_engine,
@@ -253,7 +254,7 @@ async def _handle_agent_message(
         await _stream_local(send_json, processed, session_id, persona_id="steve", profile="local")
         return
 
-    profile = "steve" if engine.id == "deepseek" else "local"
+    profile = engine_profile(engine.id)
     await _stream_local(send_json, processed, session_id, persona_id="steve", profile=profile)
 
 

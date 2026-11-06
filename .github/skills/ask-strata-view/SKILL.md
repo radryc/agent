@@ -49,6 +49,11 @@ and runs a live starter query using the native tools.
 | Synthetics `/probes` | `guardian_overview`, `doctor_metrics_query` with `guardian_probe_up` |
 | Partition `/partition/<name>` | `guardian_partition_detail`, then partition-scoped Doctor tools |
 
+When the user asks to create a graph, panel, saved graph, or dashboard from this
+view, follow `agent/.github/skills/create-doctor-graphs/SKILL.md`: discover
+metrics, prove the query returns data, emit a JSON/YAML graph file, and validate
+it before answering.
+
 ### Guardian
 
 - `guardian_overview` for the partition dashboard.

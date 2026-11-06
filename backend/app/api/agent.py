@@ -7,7 +7,8 @@ from fastapi import APIRouter
 from app.agent.opencode import is_opencode_available, list_opencode_models, list_opencode_providers
 from app.agent.personas import list_personas, resolve_engine
 from app.agent.workspace import workspace_snapshot
-from app.llm.client import list_models as list_llm_models
+from app.llm.client import available_profiles, list_models as list_llm_models
+from app.llm.presets import LLM_MODEL_PRESETS
 from app.config import get_runtime, runtime_bool
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,16 @@ async def agent_models():
             "base_url": str(get_runtime("llm_base_url") or ""),
             "current_model": str(get_runtime("llm_model") or "gemma-4-E4B-it"),
             "models": [],
+            "presets": [dict(p) for p in LLM_MODEL_PRESETS],
+            "grammar_enabled": runtime_bool("llm_grammar_enabled", default=True),
+        },
+        "profiles": available_profiles(),
+        "hybrid": {
+            "enabled": runtime_bool("llm_hybrid_enabled", default=True),
+            "fallback_ready": any(
+                p["id"] == "fallback" and p["available"] for p in available_profiles()
+            ),
+            "after_rounds": get_runtime("llm_hybrid_after_rounds"),
         },
         "opencode": {
             "provider": str(get_runtime("opencode_provider_id") or "anthropic"),
