@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Message, Session, WSIncoming, AgentType, PersonaType, PersonaId, Mode } from "../types";
+import type { Message, Session, WSIncoming, AgentType, PersonaType, PersonaId, Mode, CrewStepEvent, ApprovalRequestEvent } from "../types";
 import { ChatWebSocket } from "../api/websocket";
 import { api } from "../api/client";
 
@@ -24,6 +24,8 @@ interface ChatState {
   execOutput: string;
   terminalConnected: boolean;
   terminalHistory: string[];
+  activeCrewSteps: CrewStepEvent[];
+  pendingApprovals: ApprovalRequestEvent[];
 
   // Actions
   init: () => void;
@@ -42,6 +44,8 @@ interface ChatState {
   setActiveAgent: (agent: AgentType) => void;
   setActivePersona: (persona: PersonaType) => void;
   setMode: (mode: Mode) => void;
+  approveMutation: (id: string, approved: boolean) => boolean;
+  clearCrewTrace: () => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -62,6 +66,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   execOutput: "",
   terminalConnected: false,
   terminalHistory: [],
+  activeCrewSteps: [],
+  pendingApprovals: [],
 
   init: () => {
     const handler = (msg: WSIncoming) => {
@@ -79,6 +85,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamPersona: (msg.data as PersonaId) || null,
           streamEngine: msg.engine_label || msg.engine || null,
         });
+      }
+
+      if (msg.type === "crew_step" && msg.agent_id && msg.task_name && msg.status) {
+        const step: CrewStepEvent = {
+          type: "crew_step",
+          agent_id: msg.agent_id,
+          agent_name: msg.agent_name || msg.agent_id,
+          task_name: msg.task_name,
+          status: msg.status,
+          tool: msg.tool,
+          tool_args: msg.tool_args,
+          summary: msg.summary,
+          ts: msg.ts || new Date().toISOString(),
+        };
+        set((s) => ({
+          activeCrewSteps: [...s.activeCrewSteps, step].slice(-80),
+        }));
+      }
+
+      if (msg.type === "approval_required" && msg.id && msg.tool) {
+        const approval: ApprovalRequestEvent = {
+          type: "approval_required",
+          id: msg.id,
+          tool: msg.tool as ApprovalRequestEvent["tool"],
+          args: msg.args || {},
+          rationale: msg.rationale || "",
+          diff: msg.diff,
+        };
+        set((s) => ({
+          pendingApprovals: [
+            ...s.pendingApprovals.filter((item) => item.id !== approval.id),
+            approval,
+          ],
+        }));
       }
 
       if (msg.type === "token" && msg.data) {
@@ -336,6 +376,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamContent: "",
       streamError: null,
       streamPersona: null,
+      activeCrewSteps: [],
     }));
 
     return true;
@@ -408,5 +449,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (mode === "terminal") {
       get().startTerminal();
     }
+  },
+
+  approveMutation: (id: string, approved: boolean) => {
+    const state = get();
+    const approval = state.pendingApprovals.find((item) => item.id === id);
+    if (!approval) return false;
+    const sent =
+      state.ws?.send({
+        type: "approval",
+        id,
+        approved,
+        session_id: state.activeSessionId || undefined,
+      }) ?? false;
+    if (!sent) return false;
+    set((s) => ({
+      pendingApprovals: s.pendingApprovals.filter((item) => item.id !== id),
+      isStreaming: true,
+      streamContent: "",
+      streamError: null,
+    }));
+    return true;
+  },
+
+  clearCrewTrace: () => {
+    set({ activeCrewSteps: [] });
   },
 }));

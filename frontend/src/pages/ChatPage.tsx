@@ -5,6 +5,8 @@ import type { Mode } from "../types";
 import Terminal, { type TerminalHandle } from "../components/terminal/Terminal";
 import ChatMessages from "../components/chat/ChatMessages";
 import ChatInput from "../components/chat/ChatInput";
+import CrewTimeline from "../components/chat/CrewTimeline";
+import ApprovalCard from "../components/chat/ApprovalCard";
 import SsoStatusButton from "../components/layout/SsoStatusButton";
 import ContextRail from "../components/chat/ContextRail";
 import NightwatchBanner from "../components/nightwatch/NightwatchBanner";
@@ -43,6 +45,7 @@ export default function ChatPage() {
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [view, setView] = useState<"chat" | "split" | "terminal">("chat");
 
   const prompt = AGENT_PROMPTS[activeAgent] || "$ ";
 
@@ -69,7 +72,7 @@ export default function ChatPage() {
   const prevLenRef = useRef(0);
   useEffect(() => {
     const term = terminalRef.current;
-    if (!term || mode !== "terminal") {
+    if (!term || view === "chat") {
       prevLenRef.current = 0;
       return;
     }
@@ -78,14 +81,15 @@ export default function ChatPage() {
       term.write(delta);
       prevLenRef.current = execOutput.length;
     }
-  }, [execOutput, mode]);
+  }, [execOutput, view]);
 
-  // Ctrl+E toggles mode. In terminal mode xterm handles the shortcut itself.
+  // Ctrl+E toggles between the rich workspace and the terminal view.
   useEffect(() => {
     if (mode !== "agent") return;
     const onKey = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.key.toLowerCase() === "e") {
         event.preventDefault();
+        setView("terminal");
         setMode("terminal");
       }
     };
@@ -107,6 +111,15 @@ export default function ChatPage() {
   const handleSetMode = useCallback(
     (newMode: Mode) => {
       setMode(newMode);
+      setView(newMode === "terminal" ? "terminal" : "chat");
+    },
+    [setMode]
+  );
+
+  const changeView = useCallback(
+    (next: "chat" | "split" | "terminal") => {
+      setView(next);
+      setMode(next === "terminal" ? "terminal" : "agent");
     },
     [setMode]
   );
@@ -191,15 +204,23 @@ export default function ChatPage() {
           <span className="text-gray-600 text-[10px]">{streamEngine}</span>
         )}
         <span className="text-gray-700">|</span>
-        <span className="text-gray-500">Mode</span>
-        <button
-          type="button"
-          className={`font-medium ${mode === "terminal" ? "text-accent-green" : "text-accent-purple"}`}
-          onClick={() => setMode(mode === "terminal" ? "agent" : "terminal")}
-          title="Ctrl+E to toggle"
-        >
-          {mode === "terminal" ? "Terminal" : "Agent"}
-        </button>
+        <span className="text-gray-500">View</span>
+        <div className="flex items-center gap-1 rounded border border-dark-600 bg-dark-900/60 p-0.5">
+          {(["chat", "split", "terminal"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => changeView(option)}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium capitalize transition-colors ${
+                view === option
+                  ? "bg-dark-600 text-accent-blue"
+                  : "text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
         <span className="text-gray-600 text-[10px]">Ctrl+E</span>
         {mode === "terminal" && (
           <>
@@ -226,8 +247,10 @@ export default function ChatPage() {
       </div>
 
       <NightwatchBanner />
+      <CrewTimeline />
+      <ApprovalCard />
 
-      {mode === "agent" ? (
+      {view === "chat" && (
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
             <ChatMessages />
@@ -235,7 +258,36 @@ export default function ChatPage() {
           </div>
           <ContextRail />
         </div>
-      ) : (
+      )}
+
+      {view === "split" && (
+        <div className="flex min-h-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col border-r border-dark-600">
+            <ChatMessages />
+            <ChatInput />
+          </div>
+          <div className="min-w-0 flex-1">
+            <Terminal
+              ref={terminalRef}
+              onSend={handleSend}
+              onTerminalStart={handleTerminalStart}
+              onTerminalInput={handleTerminalInput}
+              onTerminalResize={handleTerminalResize}
+              onTerminalSignal={handleTerminalSignal}
+              onTerminalHistory={handleTerminalHistory}
+              onCancel={handleCancel}
+              streaming={isStreaming}
+              prompt={prompt}
+              mode="terminal"
+              cwd={cwd}
+              onSetMode={handleSetMode}
+            />
+          </div>
+          <ContextRail />
+        </div>
+      )}
+
+      {view === "terminal" && (
         <div className="min-h-0 flex-1">
           <Terminal
             ref={terminalRef}

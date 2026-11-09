@@ -43,6 +43,7 @@ async def agent_status():
         "workspace": workspace_snapshot(),
         "auto_switch_enabled": runtime_bool("auto_switch_enabled", default=True),
         "auto_push_enabled": runtime_bool("auto_push_enabled", default=False),
+        "agent_flow_enabled": runtime_bool("agent_flow_enabled", default=True),
         # Legacy shape (kept for older clients)
         "agents": [
             {

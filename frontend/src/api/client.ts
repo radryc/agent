@@ -50,6 +50,7 @@ export interface AgentSettings {
   steve_system_prompt: string;
   auto_switch_enabled: boolean;
   auto_push_enabled: boolean;
+  agent_flow_enabled: boolean;
   // MonoFS workspace
   monofs_router: string;
   monofs_mount: string;
@@ -291,6 +292,7 @@ export const api = {
       workspace: WorkspaceStatus;
       auto_switch_enabled: boolean;
       auto_push_enabled: boolean;
+      agent_flow_enabled: boolean;
       agents: Array<{
         id: string;
         name: string;

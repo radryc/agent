@@ -468,6 +468,23 @@ export default function SettingsPage() {
             <label className="flex items-start gap-3 cursor-pointer">
               <input
                 type="checkbox"
+                checked={settings?.agent_flow_enabled ?? true}
+                onChange={(e) => update("agent_flow_enabled", e.target.checked)}
+                style={{ accentColor: "var(--color-accent-purple, #9333ea)" }}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-200">Specialist crew flow</span>
+                <span className="block text-xs text-gray-600">
+                  Run TelemetryHound and TopologyAuditor in parallel, then let Otto synthesize
+                  a typed verdict. Disable to fall back to the legacy single-agent tool loop.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
                 checked={settings?.auto_switch_enabled ?? true}
                 onChange={(e) => update("auto_switch_enabled", e.target.checked)}
                 style={{ accentColor: "var(--color-accent-purple, #9333ea)" }}

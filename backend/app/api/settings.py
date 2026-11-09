@@ -53,6 +53,7 @@ class SettingsPayload(BaseModel):
     steve_system_prompt: str | None = None
     auto_switch_enabled: bool | None = None
     auto_push_enabled: bool | None = None
+    agent_flow_enabled: bool | None = None
     monofs_router: str | None = None
     monofs_mount: str | None = None
     monofs_overlay: str | None = None

@@ -6,7 +6,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.config import load_runtime_settings, settings
+from app.agent.nightwatch_bridge import assess_with_flow
+from app.config import load_runtime_settings, runtime_bool, settings
 from app.nightwatch.api import configure, router
 from app.nightwatch.doctor import DoctorClient
 from app.nightwatch.guardian import GuardianClient
@@ -45,7 +46,15 @@ async def lifespan(app: FastAPI):
         sentinel_url=settings.nightwatch_sentinel_url,
         tenant=settings.nightwatch_tenant,
     )
-    investigator = Investigator(guardian, doctor, assessor=assess)
+    investigator = Investigator(
+        guardian,
+        doctor,
+        assessor=(
+            assess_with_flow
+            if runtime_bool("agent_flow_enabled", default=True)
+            else assess
+        ),
+    )
     worker = NightwatchWorker(store, guardian, doctor, investigator)
 
     task: asyncio.Task | None = None

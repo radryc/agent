@@ -247,7 +247,7 @@ class OIDCProviderTest(unittest.IsolatedAsyncioTestCase):
         self._set(agent_oidc_token="static-token")
 
         response = MagicMock()
-        response.raise_for_status.return_value = None
+        response.is_error = False
         response.text = "{}"
         client = AsyncMock()
         client.__aenter__.return_value = client

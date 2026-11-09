@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useChatStore } from "../../stores/chatStore";
 import AgentSwitch from "./AgentSwitch";
 import AgentAvatar from "../chat/AgentAvatar";
-import { Plus, Trash2, Settings, MessageSquare, Moon, X, Pencil } from "lucide-react";
+import { Plus, Trash2, Settings, MessageSquare, Moon, X, Pencil, LayoutDashboard } from "lucide-react";
 import type { PersonaType } from "../../types";
 
 interface SidebarProps {
@@ -89,6 +89,24 @@ export default function Sidebar({ onClose }: SidebarProps) {
       {/* Persona Switch */}
       <div className="px-3 pt-3 pb-2">
         <AgentSwitch value={activePersona} onChange={handleAgentChange} />
+      </div>
+
+      {/* Dashboard */}
+      <div className="px-3 pb-2">
+        <button
+          onClick={() => {
+            navigate("/dashboard");
+            onClose();
+          }}
+          className={`flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm transition-colors ${
+            location.pathname.startsWith("/dashboard")
+              ? "bg-dark-600 text-gray-100"
+              : "text-gray-400 hover:bg-dark-700 hover:text-gray-200"
+          }`}
+        >
+          <LayoutDashboard size={14} />
+          <span className="flex-1 text-left">Mission Control</span>
+        </button>
       </div>
 
       {/* Nightwatch */}

@@ -13,8 +13,12 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 from app.api.nightwatch import router as nightwatch_proxy_router  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.nightwatch.api import configure, router  # noqa: E402
-from app.nightwatch.guardian import enabled_partitions  # noqa: E402
+from app.nightwatch.guardian import (  # noqa: E402
+    NightwatchUpstreamError,
+    enabled_partitions,
+)
 from app.nightwatch.investigator import (  # noqa: E402
+    DEFAULT_METRIC_QUERIES,
     Candidate,
     EvidenceDraft,
     InvestigationResult,
@@ -536,6 +540,94 @@ class ImprovementTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("structured" in title.lower() or "log" in title.lower() for title in titles))
         self.assertTrue(any("standard process" in title.lower() for title in titles))
         self.assertTrue(any("doctor_*" in title for title in titles))
+
+    def test_default_metric_queries_use_valid_promql_escapes(self):
+        # `\.` is not a valid PromQL string escape; Doctor rejects it with 400.
+        # The literal-dot matcher must use a character class instead.
+        for template in DEFAULT_METRIC_QUERIES:
+            query = template.replace("__PARTITION__", "doctor")
+            invalid_escape = "\\." in query.replace("\\\\.", "")
+            self.assertFalse(invalid_escape, query)
+        service_queries = [q for q in DEFAULT_METRIC_QUERIES if "service=~" in q]
+        self.assertTrue(service_queries)
+        self.assertTrue(all("[.]" in q for q in service_queries))
+
+    def test_failed_metric_evidence_does_not_propose_missing_metrics(self):
+        evidence = [
+            EvidenceDraft(
+                "metric",
+                'up{guardian_partition="doctor"}',
+                None,
+                None,
+                "query failed: doctor returned 400 for /api/v1/query",
+                "h",
+                "doctor",
+            ),
+            EvidenceDraft(
+                "metric",
+                'guardian_probe_up{guardian_partition="doctor"}',
+                None,
+                None,
+                "5 series; service=doctor",
+                "h",
+                "doctor",
+            ),
+            EvidenceDraft(
+                "metric",
+                'count by (__name__) ({guardian_partition="doctor"})',
+                None,
+                None,
+                "query failed: doctor returned 400 for /api/v1/query",
+                "h",
+                "doctor",
+            ),
+        ]
+        suggestions = Investigator._derive_improvements(
+            {"partition": "doctor"}, [], evidence
+        )
+        titles = [item.title.lower() for item in suggestions]
+        self.assertFalse(any("standard process" in title for title in titles))
+        self.assertFalse(any("doctor_*" in title for title in titles))
+
+    async def test_degraded_investigation_emits_no_improvements(self):
+        class FailingMetricDoctor(FakeDoctor):
+            async def metric(self, query, at=None):
+                raise NightwatchUpstreamError(
+                    "doctor",
+                    "doctor returned 400 for /api/v1/query",
+                    status_code=400,
+                )
+
+        investigator = Investigator(
+            FakeGuardian([]),
+            FailingMetricDoctor([]),
+            assessor=FakeAssessor(
+                {
+                    "summary": "not sure",
+                    "root_cause_candidate": {
+                        "partition": "div-a-orders",
+                        "service": "",
+                        "confidence": 0.1,
+                    },
+                    "recommended_action": "none",
+                    "rationale": "metrics unavailable",
+                    "evidence_ids": [],
+                    "improvements": [
+                        {
+                            "title": "Add a metric",
+                            "category": "metrics",
+                            "rationale": "gap",
+                            "proposed_change": "emit gauge",
+                        }
+                    ],
+                }
+            ),
+        )
+        result = await investigator.investigate(
+            {"id": "inc-1", "partition": "div-a-orders", "title": "orders errors"},
+            [{"alertname": "HighErrorRate", "labels": {}, "annotations": {}}],
+        )
+        self.assertEqual(result.improvements, [])
 
     def test_llm_improvement_validation_rejects_empty_changes(self):
         raw = [

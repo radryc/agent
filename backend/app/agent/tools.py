@@ -189,12 +189,53 @@ async def _guardian_post(path: str) -> str:
         return r.text
 
 
+class DoctorQueryError(RuntimeError):
+    """A Doctor query failed. Carries the status, request ID, and an
+    attributed cause so the SRE flow can name the right subsystem instead of
+    blaming the query service for an upstream storage failure."""
+
+
+def _doctor_error_detail(response: httpx.Response) -> str:
+    """Build a diagnostic string from a non-2xx Doctor response.
+
+    Doctor deliberately replaces 5xx messages with a generic string, so the
+    useful facts are the status code, the ``X-Request-ID`` header (for log
+    correlation), and the sanitised ``cause`` field added to the envelope.
+    """
+    request_id = (response.headers.get("x-request-id") or "").strip()
+    body = (response.text or "").strip()
+
+    cause = ""
+    if body:
+        try:
+            payload = json.loads(body)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            cause = str(payload.get("cause") or "").strip()
+            if not request_id:
+                request_id = str(payload.get("requestId") or "").strip()
+
+    parts = [f"HTTP {response.status_code}"]
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    if cause:
+        parts.append(f"cause={cause}")
+    detail = " ".join(parts)
+    if body:
+        if len(body) > 2000:
+            body = body[:2000] + "...(truncated)"
+        detail += f": {body}"
+    return detail
+
+
 async def _doctor_get(path: str) -> str:
     url = f"{DOCTOR_QUERY_URL.rstrip('/')}/{path.lstrip('/')}"
     headers = await oidc.auth_headers()
     async with httpx.AsyncClient(timeout=DOCTOR_TIMEOUT, headers=headers) as client:
         r = await client.get(url)
-        r.raise_for_status()
+        if r.is_error:
+            raise DoctorQueryError(_doctor_error_detail(r))
         return r.text
 
 

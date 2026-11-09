@@ -54,7 +54,7 @@ STEVE_DEFAULT_PROMPT = (
     "Full playbook: `agent/.github/skills/ask-strata-view/SKILL.md`.\n"
     "- Telemetry: use `doctor_logs_services`, `doctor_logs_search`, `doctor_metrics_query`, "
     "`doctor_traces_recent`, and `doctor_trace_detail`; scope to `guardian_partition=agent` or "
-    "`service=~\"agent\\..*\"`; Doctor and Guardian calls use the backend OIDC/SSO token automatically, "
+    "`service=~\"agent\\\\..*\"`; Doctor and Guardian calls use the backend OIDC/SSO token automatically, "
     "so check `GET /api/auth/status` if a query returns 401, or use `kubectl -n agent logs/describe` and report "
     "the limitation. Full playbook: `agent/.github/skills/query-agent-telemetry/SKILL.md`.\n"
     "- Graph authoring: when asked to create graphs, panels, or dashboards, discover metric names with "

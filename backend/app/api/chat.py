@@ -8,8 +8,9 @@ import signal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.agent.loop import run_agent_turn, ensure_session
+from app.agent.loop import ensure_session
 from app.agent.opencode import run_opencode
+from app.agent.sre_flow import resolve_approval, run_turn
 from app.agent.personas import (
     DEFAULT_PERSONA_ID,
     engine_profile,
@@ -30,7 +31,7 @@ router = APIRouter()
 @router.post("/api/chat")
 async def chat(req: ChatRequest):
     session_id = await ensure_session(req.session_id)
-    result = await run_agent_turn(req.message, session_id, stream=False)
+    result = await run_turn(req.message, session_id)
     return {
         "session_id": session_id,
         "message": {"role": "assistant", "content": result},
@@ -139,6 +140,23 @@ async def ws_chat(websocket: WebSocket):
                 except Exception as e:
                     logger.exception("Error executing command")
                     await safe_send({"type": "error", "data": str(e)})
+                continue
+
+            if msg_type == "approval":
+                approval_id = str(data.get("id") or "")
+                approved = bool(data.get("approved"))
+                result = await resolve_approval(approval_id, approved)
+                result_session = result.get("session_id")
+                if result_session:
+                    await safe_send({"type": "session", "session_id": result_session})
+                await safe_send(
+                    {
+                        "type": "token",
+                        "data": result.get("text", ""),
+                        "session_id": result_session,
+                    }
+                )
+                await safe_send({"type": "done", "session_id": result_session})
                 continue
 
             if msg_type != "message":
@@ -266,17 +284,13 @@ async def _stream_local(
     persona_id: str = DEFAULT_PERSONA_ID,
     profile: str = "local",
 ):
-    token_stream = await run_agent_turn(
+    await run_turn(
         user_message,
         session_id,
-        stream=True,
         persona_id=persona_id,
         profile=profile,
+        emit=send_json,
     )
-    async for token in token_stream:
-        await send_json(
-            {"type": "token", "data": token, "session_id": session_id}
-        )
     await send_json({"type": "done", "session_id": session_id})
 
 

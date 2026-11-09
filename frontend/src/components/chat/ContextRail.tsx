@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import {
-  FolderOpen, MessageSquare, Settings, Terminal, UserRound,
+  FolderOpen, MessageSquare, Settings, Terminal, UserRound, Layers, ShieldAlert,
 } from "lucide-react";
 import { useChatStore } from "../../stores/chatStore";
 
@@ -19,6 +19,8 @@ export default function ContextRail() {
     cwd,
     terminalConnected,
     terminalHistory,
+    activeCrewSteps,
+    pendingApprovals,
   } = useChatStore();
   const session = sessions.find((item) => item.id === activeSessionId);
 
@@ -46,6 +48,47 @@ export default function ContextRail() {
             <UserRound size={14} className="text-accent-purple" />
             {PERSONA_LABELS[activePersona]}
           </div>
+        </div>
+
+        <div>
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">
+            Crew pipeline
+          </div>
+          {activeCrewSteps.length === 0 ? (
+            <p className="text-xs text-gray-500">No active crew. The flow starts on the next diagnostic turn.</p>
+          ) : (
+            <ul className="space-y-1">
+              {Array.from(new Map(activeCrewSteps.map((step) => [step.agent_id, step])).values()).map(
+                (step) => (
+                  <li
+                    key={step.agent_id}
+                    className="flex items-center gap-2 rounded border border-dark-600 bg-dark-900/60 px-2 py-1 text-[10px]"
+                  >
+                    <Layers size={12} className="shrink-0 text-accent-cyan" />
+                    <span className="truncate text-gray-300">{step.agent_name}</span>
+                    <span
+                      className={`ml-auto shrink-0 ${
+                        step.status === "completed"
+                          ? "text-emerald-400"
+                          : step.status === "failed"
+                            ? "text-red-400"
+                            : "text-amber-300"
+                      }`}
+                    >
+                      {step.status}
+                    </span>
+                  </li>
+                )
+              )}
+            </ul>
+          )}
+          {pendingApprovals.length > 0 && (
+            <div className="mt-2 flex items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200">
+              <ShieldAlert size={12} />
+              {pendingApprovals.length} approval request
+              {pendingApprovals.length === 1 ? "" : "s"} waiting
+            </div>
+          )}
         </div>
 
         <div>

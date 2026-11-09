@@ -21,10 +21,10 @@ services:
       - MODEL_REPO=${MODEL_REPO:-unsloth/gemma-4-E4B-it-GGUF}
       - MODEL_FILE=${MODEL_FILE:-gemma-4-E4B-it-Q4_K_M.gguf}
       - MODEL_DIR=/models
-      - CTX_SIZE=${CTX_SIZE:-32768}
+      - CTX_SIZE=${CTX_SIZE:-16384}
       - N_GPU_LAYERS=${N_GPU_LAYERS:-99}
       - THREADS=${THREADS:-4}
-      - PARALLEL=${PARALLEL:-1}
+      - PARALLEL=${PARALLEL:-2}
       - REASONING_FORMAT=${REASONING_FORMAT:-deepseek}
       - EXTRA_ARGS=${EXTRA_ARGS:-}
     healthcheck:
@@ -88,6 +88,7 @@ services:
       STEVE_LLM_MODEL: ${STEVE_LLM_MODEL:-deepseek-chat}
       STEVE_LLM_API_KEY: ${STEVE_LLM_API_KEY:-}
       AUTO_SWITCH_ENABLED: ${AUTO_SWITCH_ENABLED:-true}
+      AGENT_FLOW_ENABLED: ${AGENT_FLOW_ENABLED:-true}
       AUTO_PUSH_ENABLED: ${AUTO_PUSH_ENABLED:-false}
       # Writable MonoFS workspace (set MONOFS_ROUTER to enable)
       MONOFS_ROUTER: ${MONOFS_ROUTER:-}

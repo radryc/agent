@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     auto_switch_enabled: bool = True
     auto_push_enabled: bool = False
 
+    # Deterministic specialist flow (TelemetryHound / TopologyAuditor / Otto /
+    # Steve). Disable to fall back to the legacy single-agent tool loop.
+    agent_flow_enabled: bool = True
+
     # MonoFS writable workspace (used by Steve to edit/commit/push code).
     # MONOFS_OVERLAY_DIR is the same variable monofs-client uses to place
     # session.sock, so honour it before falling back to the docker default.
@@ -219,6 +223,7 @@ def get_all_runtime_settings() -> dict:
         "steve_system_prompt": settings.steve_system_prompt,
         "auto_switch_enabled": settings.auto_switch_enabled,
         "auto_push_enabled": settings.auto_push_enabled,
+        "agent_flow_enabled": settings.agent_flow_enabled,
         "monofs_router": settings.monofs_router,
         "monofs_mount": settings.monofs_mount,
         "monofs_overlay": settings.monofs_overlay,

@@ -549,6 +549,7 @@ async def run_agent_turn(
     stream: bool = True,
     persona_id: str = DEFAULT_PERSONA_ID,
     profile: str = "local",
+    allowed_override: set[str] | None = None,
 ) -> AsyncIterator[str] | str:
     persona = get_persona(persona_id) or get_persona(DEFAULT_PERSONA_ID)
     if user_message.strip().lower() == "/help":
@@ -563,6 +564,8 @@ async def run_agent_turn(
 
     system_prompt = persona_system_prompt(persona.id)
     allowed = allowed_tools(persona.id)
+    if allowed_override is not None:
+        allowed = set(allowed_override)
     # Always inject tool instructions, even if user customized the system prompt
     tool_instructions = build_tool_instructions(allowed)
     full_system_prompt = system_prompt + persona.operating_policy + tool_instructions

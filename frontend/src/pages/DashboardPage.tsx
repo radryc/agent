@@ -25,7 +25,9 @@ import {
   ShieldCheck,
   Wrench,
   BrainCircuit,
-  Image,
+  Moon,
+  Cpu,
+  Workflow,
 } from "lucide-react";
 import { api } from "../api/client";
 import { statusLabel, statusToken } from "../lib/status";
@@ -65,6 +67,9 @@ type Overview = {
   summary: OverviewSummary;
   partitions: PartitionSummary[];
 };
+
+type AgentStatus = Awaited<ReturnType<typeof api.agentStatus>>;
+type NightwatchStatus = Awaited<ReturnType<typeof api.nightwatchOverview>>;
 
 function healthColor(health: string): string {
   return `var(${statusToken(health)})`;
@@ -124,6 +129,8 @@ const PIE_COLORS = [
 
 export default function DashboardPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
+  const [nightwatch, setNightwatch] = useState<NightwatchStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<Date>(new Date());
@@ -131,15 +138,21 @@ export default function DashboardPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
-      const data = await api.guardianOverview();
-      setOverview(data);
-      setRefreshedAt(new Date());
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load overview");
-    } finally {
-      setLoading(false);
+    const [overviewResult, agentResult, nightwatchResult] = await Promise.allSettled([
+      api.guardianOverview(),
+      api.agentStatus(),
+      api.nightwatchOverview(),
+    ]);
+    if (overviewResult.status === "fulfilled") {
+      setOverview(overviewResult.value);
+    } else {
+      const reason = overviewResult.reason;
+      setError(reason instanceof Error ? reason.message : "Failed to load overview");
     }
+    if (agentResult.status === "fulfilled") setAgentStatus(agentResult.value);
+    if (nightwatchResult.status === "fulfilled") setNightwatch(nightwatchResult.value);
+    setRefreshedAt(new Date());
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -269,7 +282,7 @@ export default function DashboardPage() {
               </div>
               <div className="rounded-lg border border-dark-500 bg-dark-800/70 px-3 py-2 text-xs text-gray-300 flex items-center gap-2">
                 <Wrench size={13} className="text-accent-purple" />
-                Tool loop: up to 5 rounds
+                Specialist flow: {agentStatus?.agent_flow_enabled ? "4 agents" : "legacy loop"}
               </div>
               <div className="rounded-lg border border-dark-500 bg-dark-800/70 px-3 py-2 text-xs text-gray-300 flex items-center gap-2">
                 <Sparkles size={13} className="text-accent-cyan" />
@@ -278,18 +291,66 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <section className="glass rounded-xl p-5 border border-blue-500/20 flex flex-col">
+          <section className="glass rounded-xl p-5 border border-violet-500/20 flex flex-col">
             <h2 className="text-sm font-semibold text-gray-200 flex items-center gap-2 mb-3">
-              <Image size={14} className="text-accent-blue" />
-              Reference Image
+              <Workflow size={14} className="text-violet-300" />
+              CrewAI Pipeline &amp; Nightwatch
             </h2>
-            <p className="text-xs text-gray-500 mb-3">
-              Prompt text hidden. Waiting for your image.
-            </p>
-            <div className="w-full h-[230px] rounded-lg border border-dashed border-dark-500 bg-dark-800/70 flex flex-col items-center justify-center gap-2">
-              <Image size={20} className="text-gray-500" />
-              <p className="text-xs text-gray-500">Share an image and I will wire it in.</p>
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center justify-between rounded border border-dark-500 bg-dark-800/70 px-3 py-2">
+                <span className="flex items-center gap-2 text-gray-300">
+                  <Cpu size={13} className="text-accent-cyan" />
+                  Specialist flow
+                </span>
+                <span className={agentStatus?.agent_flow_enabled ? "text-emerald-400" : "text-gray-500"}>
+                  {agentStatus?.agent_flow_enabled ? "enabled" : "legacy loop"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded border border-dark-500 bg-dark-800/70 px-3 py-2">
+                <span className="flex items-center gap-2 text-gray-300">
+                  <Moon size={13} className="text-violet-300" />
+                  Nightwatch
+                </span>
+                <span className={nightwatch?.enabled ? "text-emerald-400" : "text-gray-500"}>
+                  {nightwatch?.mode || "shadow"} · {nightwatch?.open_incidents ?? 0} open
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded border border-dark-500 bg-dark-800/70 px-3 py-2">
+                <span className="flex items-center gap-2 text-gray-300">
+                  <GitBranch size={13} className="text-accent-blue" />
+                  Watched partitions
+                </span>
+                <span className="text-gray-300">
+                  {nightwatch?.assignments ?? s?.partitions ?? "—"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded border border-dark-500 bg-dark-800/70 px-3 py-2">
+                <span className="flex items-center gap-2 text-gray-300">
+                  <Boxes size={13} className="text-accent-purple" />
+                  MonoFS workspace
+                </span>
+                <span className={agentStatus?.workspace.mounted ? "text-emerald-400" : "text-amber-400"}>
+                  {agentStatus?.workspace.mounted ? "mounted" : "not mounted"}
+                </span>
+              </div>
             </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {agentStatus?.personas.map((persona) => (
+                <span
+                  key={persona.id}
+                  className="rounded-full border border-dark-500 bg-dark-800/70 px-2 py-0.5 text-[10px] text-gray-400"
+                  title={persona.engine.detail}
+                >
+                  {persona.name}: {persona.engine.label}
+                </span>
+              ))}
+            </div>
+            <Link
+              to="/nightwatch"
+              className="mt-3 text-[11px] font-medium text-violet-300 hover:text-violet-200"
+            >
+              Open Nightwatch timeline →
+            </Link>
           </section>
         </div>
 
