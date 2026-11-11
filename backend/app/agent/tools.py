@@ -13,6 +13,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Awaitable
 from urllib.parse import parse_qs, quote_plus, urlparse
 
@@ -20,6 +21,7 @@ from duckduckgo_search import DDGS
 import httpx
 
 from app.config import get_runtime, runtime_bool, settings
+from app.agent import graph_validation
 from app.agent import workspace as workspace_tools
 from app.auth.oidc import oidc
 
@@ -187,12 +189,53 @@ async def _guardian_post(path: str) -> str:
         return r.text
 
 
+class DoctorQueryError(RuntimeError):
+    """A Doctor query failed. Carries the status, request ID, and an
+    attributed cause so the SRE flow can name the right subsystem instead of
+    blaming the query service for an upstream storage failure."""
+
+
+def _doctor_error_detail(response: httpx.Response) -> str:
+    """Build a diagnostic string from a non-2xx Doctor response.
+
+    Doctor deliberately replaces 5xx messages with a generic string, so the
+    useful facts are the status code, the ``X-Request-ID`` header (for log
+    correlation), and the sanitised ``cause`` field added to the envelope.
+    """
+    request_id = (response.headers.get("x-request-id") or "").strip()
+    body = (response.text or "").strip()
+
+    cause = ""
+    if body:
+        try:
+            payload = json.loads(body)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            cause = str(payload.get("cause") or "").strip()
+            if not request_id:
+                request_id = str(payload.get("requestId") or "").strip()
+
+    parts = [f"HTTP {response.status_code}"]
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    if cause:
+        parts.append(f"cause={cause}")
+    detail = " ".join(parts)
+    if body:
+        if len(body) > 2000:
+            body = body[:2000] + "...(truncated)"
+        detail += f": {body}"
+    return detail
+
+
 async def _doctor_get(path: str) -> str:
     url = f"{DOCTOR_QUERY_URL.rstrip('/')}/{path.lstrip('/')}"
     headers = await oidc.auth_headers()
     async with httpx.AsyncClient(timeout=DOCTOR_TIMEOUT, headers=headers) as client:
         r = await client.get(url)
-        r.raise_for_status()
+        if r.is_error:
+            raise DoctorQueryError(_doctor_error_detail(r))
         return r.text
 
 
@@ -2358,6 +2401,46 @@ register(Skill(
     parameters={"match": "Optional PromQL series selector, e.g. up{guardian_partition=\"monofs\"}"},
     status_prefix="Listing Doctor metric labels",
     handler=_tool_doctor_metrics_labels,
+))
+
+
+async def _tool_doctor_graph_validate(args: dict) -> str:
+    path = str(args.get("path") or "").strip()
+    content = args.get("content")
+    fmt = str(args.get("format") or "").strip().lower()
+
+    label = path or "<content>"
+    try:
+        if content is not None and str(content).strip():
+            document = graph_validation.parse_text(str(content), fmt)
+        elif path:
+            target = Path(path).expanduser()
+            if not target.is_absolute():
+                target = workspace_tools.mount_root() / target
+            if not target.is_file():
+                return f"Error: graph file not found: {target}"
+            label = str(target)
+            document = graph_validation.load_document(target)
+        else:
+            return "Error: provide path=<workspace file> or content=<JSON/YAML>"
+    except Exception as exc:
+        return f"Error: could not parse {label}: {exc}"
+
+    report = graph_validation.Report()
+    kind = graph_validation.validate_document(document, report)
+    return graph_validation.render_report(report, kind, label)
+
+
+register(Skill(
+    name="doctor_graph_validate", category="doctor",
+    description="Validate a Saved Graph Bundle v1, Doctor Dashboard v1, or dashboard bundle JSON/YAML file before import. Returns OK plus the detected format, or field-level errors. Use after generating a graph file and before telling the user it is ready.",
+    parameters={
+        "path": "Workspace-relative or absolute file path (optional if content is provided)",
+        "content": "Raw JSON/YAML graph file content (optional if path is provided)",
+        "format": "json or yaml; optional for content, otherwise auto-detected",
+    },
+    status_prefix="Validating Doctor graph file",
+    handler=_tool_doctor_graph_validate,
 ))
 
 

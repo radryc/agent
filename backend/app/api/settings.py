@@ -14,6 +14,19 @@ class SettingsPayload(BaseModel):
     system_prompt: str | None = None
     llm_model: str | None = None
     gemini_api_key: str | None = None
+    llm_providers_json: str | None = None
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_grammar_enabled: bool | None = None
+    llm_tool_grammar: str | None = None
+    llm_request_extra: str | None = None
+    llm_hybrid_enabled: bool | None = None
+    llm_hybrid_after_rounds: int | None = None
+    llm_max_tool_rounds: int | None = None
+    llm_fallback_base_url: str | None = None
+    llm_fallback_model: str | None = None
+    llm_fallback_api_key: str | None = None
+    llm_fallback_provider: str | None = None
     gemini_image_model: str | None = None
     gemini_image_aspect_ratio: str | None = None
     gemini_image_count: int | None = None
@@ -40,6 +53,7 @@ class SettingsPayload(BaseModel):
     steve_system_prompt: str | None = None
     auto_switch_enabled: bool | None = None
     auto_push_enabled: bool | None = None
+    agent_flow_enabled: bool | None = None
     monofs_router: str | None = None
     monofs_mount: str | None = None
     monofs_overlay: str | None = None
@@ -56,6 +70,20 @@ def _mask_secret(secret: str) -> str:
 @router.get("/api/settings")
 async def get_settings():
     data = get_all_runtime_settings()
+    # Provider blobs may contain API keys; never echo them back.
+    data.pop("llm_providers_json", None)
+    data["llm_providers_configured"] = bool(get_runtime("llm_providers_json"))
+
+    llm_key = (get_runtime("llm_api_key") or "").strip()
+    data["llm_api_key"] = ""
+    data["llm_api_key_set"] = bool(llm_key)
+    data["llm_api_key_masked"] = _mask_secret(llm_key)
+
+    fallback_key = (get_runtime("llm_fallback_api_key") or "").strip()
+    data["llm_fallback_api_key"] = ""
+    data["llm_fallback_api_key_set"] = bool(fallback_key)
+    data["llm_fallback_api_key_masked"] = _mask_secret(fallback_key)
+
     gemini_key = (get_runtime("gemini_api_key") or "").strip()
     data["gemini_api_key"] = ""
     data["gemini_api_key_set"] = bool(gemini_key)
@@ -95,6 +123,8 @@ async def get_settings():
 async def put_settings(payload: SettingsPayload):
     overrides = {k: v for k, v in payload.model_dump().items() if v is not None}
     for key in (
+        "llm_api_key",
+        "llm_fallback_api_key",
         "gemini_api_key",
         "opencode_api_key",
         "steve_llm_api_key",

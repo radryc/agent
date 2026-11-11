@@ -13,7 +13,16 @@ from app.agent.personas import (
     persona_system_prompt,
 )
 from app.agent.tools import execute_tool, build_tool_instructions, get_skill
-from app.llm.client import chat_completion
+from app.config import get_runtime, runtime_bool
+from app.llm.client import (
+    chat_completion,
+    fallback_ready,
+    hybrid_after_rounds,
+    max_tool_rounds,
+    profile_label,
+    profile_supports_grammar,
+)
+from app.llm.grammar import looks_like_tool_attempt, tool_call_grammar
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +97,6 @@ _DSML_PARAM_RE = re.compile(
     rf"</{_DSML_BAR}DSML{_DSML_BAR}\s*parameter>",
     re.DOTALL | re.IGNORECASE,
 )
-
-MAX_TOOL_ROUNDS = 5
 
 _HELP_TEXT = (
     "You are Strata developer helper. Agent mode uses structured tools; terminal mode gives full bash.\n\n"
@@ -198,6 +205,16 @@ _HELP_TEXT = (
     "lb_edge_services()\n"
     "  List LB Edge routes: account, external port, protocol, description,\n"
     "  and registered backends.\n"
+    "--- GRAPH AUTHORING (saved graphs / dashboards) ---\n"
+    "When asked to create a graph, chart, panel, saved graph, or dashboard:\n"
+    "  1. doctor_metrics_names(search=...) + doctor_metrics_labels(match=...)\n"
+    "  2. doctor_metrics_query(promql=..., start=..., end=..., step=...) to prove data\n"
+    "  3. Emit Saved Graph Bundle v1 (simple line graphs, version: 1) or\n"
+    "     Doctor Dashboard v1 (version: doctor.dashboard/v1, gauge/stat/table/logs/traces).\n"
+    "     Always set partitions: [<affected partitions>] (RBAC scope).\n"
+    "  4. Validate with doctor_graph_validate(path=...) or\n"
+    "     agent/.github/skills/create-doctor-graphs/scripts/validate_graph_file.py\n"
+    "  Full schema/examples: agent/.github/skills/create-doctor-graphs/SKILL.md\n"
     "--- MONOFS (code search / filesystem) ---\n"
     "monofs_search(query: str, max_results: int=20, file_pattern: str?,\n"
     "              case_sensitive: bool?, regex: bool?)\n"
@@ -267,7 +284,13 @@ _STEVE_HELP_TEXT = (
     "  strata_view_context(product, path)          — Resolve the current UI view + live starter query.\n"
     "  lb_edge_services()                          — List registered LB Edge routes.\n"
     "  Read `agent/.github/skills/query-agent-telemetry/SKILL.md` for queries and\n"
-    "  `agent/.github/skills/agent-sso-setup/SKILL.md` for SSO configuration.\n"
+    "  `agent/.github/skills/agent-sso-setup/SKILL.md` for SSO configuration.\n\n"
+    "=== GRAPH AUTHORING ===\n"
+    "  doctor_metrics_names / doctor_metrics_labels / doctor_metrics_query — prove the data first.\n"
+    "  Emit Saved Graph Bundle v1 (line graphs) or Doctor Dashboard v1 (gauges/panels/logs/traces).\n"
+    "  Always set partitions: [<affected partitions>]; dashboard writes require maintainer/admin.\n"
+    "  Validate: doctor_graph_validate(path=...) or the create-doctor-graphs validator script.\n"
+    "  Read `agent/.github/skills/create-doctor-graphs/SKILL.md` for the schema and examples.\n"
     "Use tools first, then answer with evidence and a clear next action."
 )
 
@@ -369,6 +392,88 @@ def _strip_tool_calls(text: str) -> str:
     return stripped.strip()
 
 
+# ---------------------------------------------------------------------------
+# Constrained decoding + hybrid escalation
+# ---------------------------------------------------------------------------
+
+def _tool_grammar(profile: str) -> str | None:
+    """GBNF grammar for tool-call retries, when the endpoint supports it."""
+    if not runtime_bool("llm_grammar_enabled", default=True):
+        return None
+    if not profile_supports_grammar(profile):
+        return None
+    return tool_call_grammar(str(get_runtime("llm_tool_grammar") or ""))
+
+
+def _can_escalate(profile: str) -> bool:
+    # Only local turns escalate; Steve may already be on an external engine.
+    return profile == "local" and fallback_ready()
+
+
+async def _model_round(
+    messages: list[dict],
+    profile: str,
+    *,
+    grammar: str | None = None,
+    force_grammar: bool = False,
+) -> str:
+    """Run one non-streaming completion, recovering malformed tool calls.
+
+    A small local model that starts emitting a tool call but breaks the JSON is
+    retried with the GBNF tool grammar, which makes the retry parseable by
+    construction. Prose answers are never constrained.
+    """
+    constrained = grammar or _tool_grammar(profile)
+    if force_grammar and constrained:
+        logger.info("[LOOP] Forcing GBNF tool-call grammar for profile=%s", profile)
+        return await _constrained_chat(messages, profile, constrained)
+
+    response = await chat_completion(messages, stream=False, profile=profile)
+    if _extract_tool_calls(response):
+        return response
+
+    if constrained and looks_like_tool_attempt(response):
+        logger.info(
+            "[LOOP] Malformed tool-call attempt on profile=%s; retrying with GBNF grammar.",
+            profile,
+        )
+        return await _constrained_chat(messages, profile, constrained)
+    return response
+
+
+async def _constrained_chat(messages: list[dict], profile: str, grammar: str) -> str:
+    """Grammar call with a plain-text fallback if the endpoint rejects it."""
+    import httpx
+
+    try:
+        return await chat_completion(
+            messages, stream=False, profile=profile, grammar=grammar
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code not in (400, 404, 422):
+            raise
+        logger.warning(
+            "[LOOP] Endpoint rejected the GBNF grammar (%s); retrying unconstrained.",
+            exc.response.status_code,
+        )
+        return await chat_completion(messages, stream=False, profile=profile)
+
+
+def _escalation_note(profile: str, reason: str) -> str:
+    return (
+        f"\n\n*Escalating to {profile_label(profile)} — {reason}.*\n\n"
+    )
+
+
+def _should_escalate(profile: str, round_num: int, *, force: bool = False) -> bool:
+    if not _can_escalate(profile):
+        return False
+    if force:
+        return True
+    return round_num >= hybrid_after_rounds()
+
+
+
 def _requires_tool_use(user_message: str) -> bool:
     return bool(_TELEMETRY_TERMS.search(user_message or ""))
 
@@ -444,6 +549,7 @@ async def run_agent_turn(
     stream: bool = True,
     persona_id: str = DEFAULT_PERSONA_ID,
     profile: str = "local",
+    allowed_override: set[str] | None = None,
 ) -> AsyncIterator[str] | str:
     persona = get_persona(persona_id) or get_persona(DEFAULT_PERSONA_ID)
     if user_message.strip().lower() == "/help":
@@ -458,6 +564,8 @@ async def run_agent_turn(
 
     system_prompt = persona_system_prompt(persona.id)
     allowed = allowed_tools(persona.id)
+    if allowed_override is not None:
+        allowed = set(allowed_override)
     # Always inject tool instructions, even if user customized the system prompt
     tool_instructions = build_tool_instructions(allowed)
     full_system_prompt = system_prompt + persona.operating_policy + tool_instructions
@@ -517,22 +625,54 @@ async def _run_tool_loop(
     metric_value: bool = False,
     partition_hint: str = "",
 ) -> str:
-    """Non-streaming: run up to MAX_TOOL_ROUNDS of tool calls then return final answer."""
+    """Non-streaming: run tool rounds then return the final answer.
+
+    Starts on the requested profile and escalates to the hybrid fallback when
+    the loop stalls (round budget) or a tool call cannot be parsed.
+    """
     nudged = False
     metric_nudged = False
     used_tools = False
-    for round_num in range(MAX_TOOL_ROUNDS):
-        response = await chat_completion(messages, stream=False, profile=profile)
+    active_profile = profile
+    escalated = False
+    force_grammar = False
+    escalation_note = ""
+
+    for round_num in range(max_tool_rounds()):
+        if not escalated and _should_escalate(profile, round_num):
+            active_profile = "fallback"
+            escalated = True
+            escalation_note = _escalation_note(
+                active_profile, f"no answer after {round_num} tool rounds"
+            )
+            logger.info(
+                "[LOOP] Escalating to fallback after %d rounds (was %s).",
+                round_num,
+                profile,
+            )
+        response = await _model_round(
+            messages, active_profile, force_grammar=force_grammar
+        )
+        force_grammar = False
         logger.info("[LOOP] LLM raw response (non-stream, round %d): %.500s", round_num, response)
         tool_calls = _extract_tool_calls(response)
         if not tool_calls:
+            if looks_like_tool_attempt(response) and not escalated and _can_escalate(profile):
+                active_profile = "fallback"
+                escalated = True
+                escalation_note = _escalation_note(
+                    active_profile, "the local model could not emit a valid tool call"
+                )
+                logger.info("[LOOP] Unparseable tool call; escalating to fallback.")
+                continue
             if require_tools and not nudged and not used_tools:
                 logger.info("[LOOP] Telemetry request without a tool call; nudging model.")
                 messages.append({"role": "system", "content": _TOOL_USE_NUDGE})
                 nudged = True
+                force_grammar = True
                 continue
             logger.info("[LOOP] No tool call detected, returning response.")
-            return response
+            return escalation_note + response
 
         used_tools = True
         assistant_text = _strip_tool_calls(response)
@@ -582,7 +722,9 @@ async def _run_tool_loop(
             metric_nudged = True
 
     # Fallback: final completion after max rounds
-    return await chat_completion(messages, stream=False, profile=profile)
+    return escalation_note + await chat_completion(
+        messages, stream=False, profile=active_profile
+    )
 
 
 def _text_chunks(text: str, size: int = 48) -> list[str]:
@@ -623,17 +765,40 @@ async def _stream_tool_loop(
     nudged = False
     metric_nudged = False
     used_tools = False
+    active_profile = profile
+    escalated = False
+    force_grammar = False
 
-    for round_num in range(MAX_TOOL_ROUNDS):
-        response = await chat_completion(working_messages, stream=False, profile=profile)
+    for round_num in range(max_tool_rounds()):
+        if not escalated and _should_escalate(profile, round_num):
+            active_profile = "fallback"
+            escalated = True
+            logger.info(
+                "[LOOP] Escalating to fallback after %d rounds (was %s).",
+                round_num,
+                profile,
+            )
+            yield _escalation_note(active_profile, f"no answer after {round_num} tool rounds")
+
+        response = await _model_round(
+            working_messages, active_profile, force_grammar=force_grammar
+        )
+        force_grammar = False
         logger.info("[LOOP] LLM raw response (round %d): %.500s", round_num, response)
 
         tool_calls = _extract_tool_calls(response)
         if not tool_calls:
+            if looks_like_tool_attempt(response) and not escalated and _can_escalate(profile):
+                active_profile = "fallback"
+                escalated = True
+                logger.info("[LOOP] Unparseable tool call; escalating to fallback.")
+                yield _escalation_note(active_profile, "the local model could not emit a valid tool call")
+                continue
             if require_tools and not nudged and not used_tools:
                 logger.info("[LOOP] Telemetry request without a tool call; nudging model.")
                 working_messages.append({"role": "system", "content": _TOOL_USE_NUDGE})
                 nudged = True
+                force_grammar = True
                 continue
             logger.info("[LOOP] No tool call detected in round %d, streaming final answer.", round_num)
             for chunk in _text_chunks(response):
@@ -700,7 +865,7 @@ async def _stream_tool_loop(
             metric_nudged = True
 
     # Max rounds exhausted — do one final non-streaming call
-    final = await chat_completion(working_messages, stream=False, profile=profile)
+    final = await chat_completion(working_messages, stream=False, profile=active_profile)
     yield final
     if final:
         await session_mgr.add_message(session_id, "assistant", final, persona=persona_id)

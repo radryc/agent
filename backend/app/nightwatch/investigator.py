@@ -21,10 +21,13 @@ DEFAULT_METRIC_QUERIES = (
     'sum by (service) (process_resident_memory_bytes{guardian_partition="__PARTITION__"})',
     'sum by (service, code) (rate(http_requests_total{guardian_partition="__PARTITION__"}[5m]))',
     # Metrics that exist under service labels rather than a partition label.
-    'up{service=~"__PARTITION__\\..*"}',
-    'process_cpu_seconds_total{service=~"__PARTITION__\\..*"}',
-    'process_resident_memory_bytes{service=~"__PARTITION__\\..*"}',
-    'http_requests_total{service=~"__PARTITION__\\..*"}',
+    # Use a character class for the literal dot: PromQL string literals reject
+    # regex escapes such as `\.` ("unknown escape sequence U+002E"). Writing
+    # `\\.` in Python produces `\.` in the query, which Doctor returns as 400.
+    'up{service=~"__PARTITION__[.].*"}',
+    'process_cpu_seconds_total{service=~"__PARTITION__[.].*"}',
+    'process_resident_memory_bytes{service=~"__PARTITION__[.].*"}',
+    'http_requests_total{service=~"__PARTITION__[.].*"}',
     # Discover the application metrics the partition actually exports.
     'count by (__name__) ({guardian_partition="__PARTITION__"})',
     # Guardian pusher health is reported by the registry, not by partition.
@@ -273,10 +276,17 @@ class Investigator:
             affected_service=affected_service,
             errors=errors,
         )
-        result.improvements = self._merge_improvements(
-            self._llm_improvements(assessment.get("improvements")),
-            self._derive_improvements(incident, alerts, evidence),
-        )
+        # Absence of evidence is not evidence of absence. If any collect step
+        # failed we have not actually observed the signals the heuristics use to
+        # infer missing metrics/logs/traces, and the assessor may be reasoning
+        # from an incomplete pack. Emitting proposals then produces confident
+        # but wrong product changes, so keep a degraded investigation read-only
+        # and silent about improvements.
+        if not any(Investigator._evidence_failed(item) for item in evidence):
+            result.improvements = self._merge_improvements(
+                self._llm_improvements(assessment.get("improvements")),
+                self._derive_improvements(incident, alerts, evidence),
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -846,6 +856,16 @@ class Investigator:
         )
 
     @staticmethod
+    def _evidence_failed(item: EvidenceDraft) -> bool:
+        """True when the collector could not query the signal at all."""
+        summary = item.result_summary.strip().lower()
+        return (
+            summary == "no data"
+            or summary.startswith("unavailable")
+            or "query failed" in summary
+        )
+
+    @staticmethod
     def _evidence_text(evidence: list[EvidenceDraft], kind: str) -> str:
         return " ".join(
             f"{item.query} {item.result_summary}" for item in evidence if item.kind == kind
@@ -895,19 +915,31 @@ class Investigator:
         alerts: list[dict],
         evidence: list[EvidenceDraft],
     ) -> list[ImprovementDraft]:
-        metric_text = Investigator._evidence_text(evidence, "metric")
+        metric_evidence = [item for item in evidence if item.kind == "metric"]
+        failed_metric_evidence = [
+            item for item in metric_evidence if Investigator._evidence_failed(item)
+        ]
+        reliable_metric_evidence = [
+            item for item in metric_evidence if item not in failed_metric_evidence
+        ]
+        metric_text = " ".join(
+            f"{item.query} {item.result_summary}" for item in reliable_metric_evidence
+        ).lower()
         log_text = Investigator._evidence_text(evidence, "log")
         trace_text = Investigator._evidence_text(evidence, "trace")
         alert_names = {str(alert.get("alertname") or "") for alert in alerts}
         pusher_alert = any(name.startswith("GuardianPusher") for name in alert_names)
         custom_metrics = any(
-            item.kind == "metric"
-            and item.query.startswith("count by (__name__)")
+            item.query.startswith("count by (__name__)")
             and "no samples" not in item.result_summary.lower()
-            for item in evidence
+            for item in reliable_metric_evidence
         )
+        # Only claim the standard metric pack is missing when every metric
+        # query actually succeeded. A 400/timeout means "unknown", not "empty",
+        # and must not turn into a product change proposal.
         standard_metrics_missing = (
-            'up{guardian_partition="' in metric_text
+            not failed_metric_evidence
+            and 'up{guardian_partition="' in metric_text
             and "no samples" in metric_text
             and "guardian_probe_up" in metric_text
         )

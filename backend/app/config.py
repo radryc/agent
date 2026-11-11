@@ -42,6 +42,33 @@ class Settings(BaseSettings):
     # to use that instead.
     llm_model: str = "gemma-4-E4B-it"
     llm_api_key: str = ""
+    # llama.cpp accepts a GBNF grammar per request. When enabled, the agent
+    # retries malformed tool-call attempts with a grammar that only allows
+    # {"tool": "...", "args": {...}} lines, which removes most format failures
+    # from small local models. Hosted providers ignore this (and would 400).
+    llm_grammar_enabled: bool = True
+    llm_tool_grammar: str = ""  # optional GBNF override
+    # Extra request body merged into every local chat completion (JSON object).
+    # Useful for llama.cpp chat-template kwargs, e.g.
+    # {"chat_template_kwargs": {"enable_thinking": false}}.
+    llm_request_extra: str = ""
+    # Hybrid routing: start on the local model, escalate to a hosted
+    # OpenAI-compatible profile when the tool loop stalls, a tool call cannot
+    # be parsed, or the turn exceeds N tool rounds.
+    llm_hybrid_enabled: bool = True
+    llm_hybrid_after_rounds: int = 3
+    llm_max_tool_rounds: int = 5
+    llm_fallback_base_url: str = "https://api.deepseek.com"
+    llm_fallback_model: str = "deepseek-chat"
+    llm_fallback_api_key: str = ""
+    # Optional named provider (from LLM_PROVIDERS_JSON) to use as the fallback.
+    # When set it wins over llm_fallback_base_url/model/api_key.
+    llm_fallback_provider: str = ""
+    # Arbitrary OpenAI-compatible provider profiles, as a JSON object:
+    # {"gemini": {"base_url": "...", "model": "...", "api_key": "...",
+    #             "chat_path": "/chat/completions"}}
+    # Select one with profile="provider:<name>".
+    llm_providers_json: str = ""
 
     # Steve persona (software engineering agent). Engine auto-detect order is
     # OpenCode -> DeepSeek -> local Gemma unless STEVE_ENGINE forces one.
@@ -54,6 +81,10 @@ class Settings(BaseSettings):
     # Persona switching
     auto_switch_enabled: bool = True
     auto_push_enabled: bool = False
+
+    # Deterministic specialist flow (TelemetryHound / TopologyAuditor / Otto /
+    # Steve). Disable to fall back to the legacy single-agent tool loop.
+    agent_flow_enabled: bool = True
 
     # MonoFS writable workspace (used by Steve to edit/commit/push code).
     # MONOFS_OVERLAY_DIR is the same variable monofs-client uses to place
@@ -152,7 +183,20 @@ def get_runtime(key: str):
 def get_all_runtime_settings() -> dict:
     defaults = {
         "system_prompt": settings.agent_system_prompt,
+        "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
+        "llm_api_key": settings.llm_api_key,
+        "llm_grammar_enabled": settings.llm_grammar_enabled,
+        "llm_tool_grammar": settings.llm_tool_grammar,
+        "llm_request_extra": settings.llm_request_extra,
+        "llm_hybrid_enabled": settings.llm_hybrid_enabled,
+        "llm_hybrid_after_rounds": settings.llm_hybrid_after_rounds,
+        "llm_max_tool_rounds": settings.llm_max_tool_rounds,
+        "llm_fallback_base_url": settings.llm_fallback_base_url,
+        "llm_fallback_model": settings.llm_fallback_model,
+        "llm_fallback_api_key": settings.llm_fallback_api_key,
+        "llm_fallback_provider": settings.llm_fallback_provider,
+        "llm_providers_json": settings.llm_providers_json,
         "gemini_image_model": settings.gemini_image_model,
         "gemini_image_aspect_ratio": settings.gemini_image_aspect_ratio,
         "gemini_image_count": settings.gemini_image_count,
@@ -179,6 +223,7 @@ def get_all_runtime_settings() -> dict:
         "steve_system_prompt": settings.steve_system_prompt,
         "auto_switch_enabled": settings.auto_switch_enabled,
         "auto_push_enabled": settings.auto_push_enabled,
+        "agent_flow_enabled": settings.agent_flow_enabled,
         "monofs_router": settings.monofs_router,
         "monofs_mount": settings.monofs_mount,
         "monofs_overlay": settings.monofs_overlay,

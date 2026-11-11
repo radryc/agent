@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agent import session as session_mgr
-from app.agent.loop import run_agent_turn
-from app.agent.personas import resolve_engine
+from app.agent.personas import engine_profile, resolve_engine
+from app.agent.sre_flow import run_turn
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -90,14 +90,14 @@ async def _mark_handoff(incident_id: str, improvement_id: str, session_id: str) 
 
 async def _run_proposal(session_id: str, prompt: str) -> None:
     engine = await resolve_engine("steve")
-    profile = "steve" if engine.id == "deepseek" else "local"
+    profile = engine_profile(engine.id)
     try:
-        await run_agent_turn(
+        await run_turn(
             prompt,
             session_id,
-            stream=False,
             persona_id="steve",
             profile=profile,
+            force_route="code_fix",
         )
     except Exception as exc:  # pragma: no cover - defensive background path
         logger.exception("Nightwatch proposal failed for session %s", session_id)

@@ -100,6 +100,12 @@ export default function SettingsPage() {
     try {
       const payload: Partial<AgentSettings> = { ...settings };
       delete payload.workspace;
+      if (!payload.llm_api_key?.trim()) {
+        delete payload.llm_api_key;
+      }
+      if (!payload.llm_fallback_api_key?.trim()) {
+        delete payload.llm_fallback_api_key;
+      }
       if (!payload.gemini_api_key?.trim()) {
         delete payload.gemini_api_key;
       }
@@ -169,8 +175,14 @@ export default function SettingsPage() {
               className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
             >
               <option value="gemma-4-E4B-it">gemma-4-E4B-it (default)</option>
+              {models?.local.presets
+                ?.filter((p) => p.model !== "gemma-4-E4B-it")
+                .map((p) => (
+                  <option key={p.id} value={p.model}>{p.label}</option>
+                ))}
               {models?.local.models
                 .filter((m) => m.id !== "gemma-4-E4B-it")
+                .filter((m) => !models?.local.presets?.some((p) => p.model === m.id))
                 .map((m) => (
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
@@ -179,6 +191,40 @@ export default function SettingsPage() {
               Model name passed to llama.cpp / Ollama / vLLM. The backend queries the LLM server for available models.
               Current: <code className="text-accent-blue">{settings?.llm_model ?? "gemma-4-E4B-it"}</code>
             </p>
+            <p className="text-xs text-gray-600">
+              To change the local <em>weights</em>, set <code>MODEL_PRESET=qwen3.5-9b</code> in{" "}
+              <code>.env</code> and restart the <code>llm</code> service (the container downloads the
+              GGUF on start). Qwen3.5 9B is the recommended agent upgrade on a 12 GB GPU.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">Local Endpoint</label>
+              <input
+                type="text"
+                placeholder="http://llm:8080"
+                value={settings?.llm_base_url ?? "http://llm:8080"}
+                onChange={(e) => update("llm_base_url", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">
+                Local API Key <span className="normal-case text-gray-600">(optional)</span>
+              </label>
+              <input
+                type="password"
+                placeholder={
+                  settings?.llm_api_key_set
+                    ? `Configured: ${settings.llm_api_key_masked ?? "(hidden)"}`
+                    : "Only for remote OpenAI-compatible endpoints"
+                }
+                value={settings?.llm_api_key ?? ""}
+                onChange={(e) => update("llm_api_key", e.target.value)}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+              />
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -192,6 +238,124 @@ export default function SettingsPage() {
               className="w-full rounded-lg bg-dark-700 border border-dark-600 p-3 text-sm text-gray-200 focus:outline-none focus:border-accent-blue resize-y font-mono leading-relaxed"
               placeholder="Loading…"
             />
+          </div>
+        </section>
+
+        {/* Routing & Reliability */}
+        <section className="glass rounded-xl p-6 space-y-5">
+          <h2 className="text-base font-semibold flex items-center gap-2 text-gray-200">
+            <Zap size={16} className="text-amber-400" />
+            Routing &amp; Reliability
+          </h2>
+
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings?.llm_grammar_enabled ?? true}
+              onChange={(e) => update("llm_grammar_enabled", e.target.checked)}
+              style={{ accentColor: "var(--color-accent-blue, #3b82f6)" }}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="text-sm text-gray-200">Grammar-constrained tool calls</span>
+              <span className="block text-xs text-gray-600">
+                When a local model emits a malformed tool call, retry with a GBNF grammar that only
+                allows <code>{'{"tool": "...", "args": {...}}'}</code>. This is a llama.cpp extension —
+                disable it if <em>Local Endpoint</em> points at a hosted provider.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings?.llm_hybrid_enabled ?? true}
+              onChange={(e) => update("llm_hybrid_enabled", e.target.checked)}
+              style={{ accentColor: "var(--color-accent-blue, #3b82f6)" }}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="text-sm text-gray-200">Hybrid escalation</span>
+              <span className="block text-xs text-gray-600">
+                Start on the local model, then escalate to the fallback endpoint when the tool loop
+                stalls or a tool call cannot be parsed.
+                {models?.hybrid?.fallback_ready ? " Fallback is configured." : " Fallback is not configured yet."}
+              </span>
+            </span>
+          </label>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">
+                Escalate after tool rounds
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={settings?.llm_hybrid_after_rounds ?? 3}
+                onChange={(e) => update("llm_hybrid_after_rounds", Math.max(1, parseInt(e.target.value || "3")))}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">
+                Max tool rounds per turn
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={settings?.llm_max_tool_rounds ?? 5}
+                onChange={(e) => update("llm_max_tool_rounds", Math.max(1, parseInt(e.target.value || "5")))}
+                className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg bg-dark-700 border border-dark-600 p-4 space-y-4">
+            <h3 className="text-sm font-semibold text-gray-200">Fallback engine</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500 uppercase tracking-wide">Base URL</label>
+                <input
+                  type="text"
+                  value={settings?.llm_fallback_base_url ?? "https://api.deepseek.com"}
+                  onChange={(e) => update("llm_fallback_base_url", e.target.value)}
+                  className="w-full rounded-lg bg-dark-800 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-500 uppercase tracking-wide">Model</label>
+                <input
+                  type="text"
+                  value={settings?.llm_fallback_model ?? "deepseek-chat"}
+                  onChange={(e) => update("llm_fallback_model", e.target.value)}
+                  className="w-full rounded-lg bg-dark-800 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs text-gray-500 uppercase tracking-wide">
+                API Key <span className="normal-case text-gray-600">(DeepSeek, Gemini, Qwen, any OpenAI-compatible)</span>
+              </label>
+              <input
+                type="password"
+                placeholder={
+                  settings?.llm_fallback_api_key_set
+                    ? `Configured: ${settings.llm_fallback_api_key_masked ?? "(hidden)"}`
+                    : "Paste the fallback API key"
+                }
+                value={settings?.llm_fallback_api_key ?? ""}
+                onChange={(e) => update("llm_fallback_api_key", e.target.value)}
+                className="w-full rounded-lg bg-dark-800 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+              />
+              <p className="text-xs text-gray-600">
+                Leave empty to keep the current key. Paths are inferred: use a base URL ending in
+                <code className="mx-1">/openai</code> for Gemini's OpenAI-compatible endpoint.
+                Additional named providers can be added with <code>LLM_PROVIDERS_JSON</code>.
+              </p>
+            </div>
           </div>
         </section>
 
@@ -222,7 +386,12 @@ export default function SettingsPage() {
               <option value="">Auto — OpenCode → External API → Local</option>
               <option value="opencode">OpenCode server</option>
               <option value="deepseek">External API (OpenAI-compatible / DeepSeek)</option>
-              <option value="local">Local Gemma (shared with Otto)</option>
+              <option value="local">Local model (shared with Otto)</option>
+              {models?.profiles
+                ?.filter((p) => p.id.startsWith("provider:"))
+                .map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
             </select>
             <p className="text-xs text-gray-600">
               Detected:{" "}
@@ -296,6 +465,23 @@ export default function SettingsPage() {
 
           {/* Switching behaviour */}
           <div className="space-y-3 pt-1">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings?.agent_flow_enabled ?? true}
+                onChange={(e) => update("agent_flow_enabled", e.target.checked)}
+                style={{ accentColor: "var(--color-accent-purple, #9333ea)" }}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="text-sm text-gray-200">Specialist crew flow</span>
+                <span className="block text-xs text-gray-600">
+                  Run TelemetryHound and TopologyAuditor in parallel, then let Otto synthesize
+                  a typed verdict. Disable to fall back to the legacy single-agent tool loop.
+                </span>
+              </span>
+            </label>
+
             <label className="flex items-start gap-3 cursor-pointer">
               <input
                 type="checkbox"

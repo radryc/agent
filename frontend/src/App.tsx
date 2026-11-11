@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import AppLayout from "./components/layout/AppLayout";
 import AuthGate from "./components/layout/AuthGate";
 import ChatPage from "./pages/ChatPage";
+import DashboardPage from "./pages/DashboardPage";
 import SettingsPage from "./pages/SettingsPage";
 import LandingPage from "./pages/LandingPage";
 import EmbedPage from "./pages/EmbedPage";
@@ -23,6 +24,7 @@ export default function App() {
           }
         >
           <Route path="/" element={<LandingPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/chat/:sessionId" element={<ChatPage />} />
           <Route path="/nightwatch" element={<NightwatchPage />} />

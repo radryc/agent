@@ -38,16 +38,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV LANG=en_US.UTF-8
 ENV PYTHONUNBUFFERED=1
 
-RUN set -eux; \
-        arch="$(dpkg --print-architecture)"; \
-        case "$arch" in \
-            amd64) bazelisk_arch="amd64" ;; \
-            arm64) bazelisk_arch="arm64" ;; \
-            *) echo "Unsupported architecture for Bazelisk: $arch"; exit 1 ;; \
-        esac; \
-        curl -fsSL "https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${bazelisk_arch}" -o /usr/local/bin/bazelisk; \
-        chmod +x /usr/local/bin/bazelisk; \
-        ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
+# Reuse the Bazelisk binary built into the monofs-client image; downloading
+# GitHub release assets is unreliable on this network (504s).
+COPY --from=monofs-client-stage /usr/local/bin/bazelisk /usr/local/bin/bazelisk
+RUN ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && ln -s /root/.local/bin/uv /usr/local/bin/uv
 

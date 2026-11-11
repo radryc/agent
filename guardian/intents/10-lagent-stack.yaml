@@ -37,7 +37,8 @@ spec:
         env:
           MODEL_REPO: unsloth/gemma-4-E4B-it-GGUF
           MODEL_FILE: gemma-4-E4B-it-Q4_K_M.gguf
-          CTX_SIZE: "8192"
+          CTX_SIZE: "16384"
+          PARALLEL: "2"
           N_GPU_LAYERS: "99"
         volumeMounts:
           - volume: llm-models
@@ -70,6 +71,7 @@ spec:
           STEVE_LLM_BASE_URL: https://api.deepseek.com
           STEVE_LLM_MODEL: deepseek-chat
           AUTO_SWITCH_ENABLED: "true"
+          AGENT_FLOW_ENABLED: "true"
           AUTO_PUSH_ENABLED: "false"
           # Writable MonoFS workspace (requires /dev/fuse + SYS_ADMIN on the docker pusher)
           MONOFS_ROUTER: ""

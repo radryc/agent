@@ -1,0 +1,61 @@
+version: 1
+exportedAt: "2026-11-05T08:00:00Z"
+savedGraphs:
+  - id: agent-request-rate
+    title: Agent request rate
+    query: >-
+      sum by (service) (
+        rate(http_server_request_duration_seconds_count{guardian_partition="agent"}[5m])
+      )
+    rangeMinutes: 60
+    refreshIntervalSec: 30
+    createdAt: "2026-11-05T08:00:00Z"
+    partitions: [agent]
+  - id: agent-p95-latency
+    title: Agent p95 latency
+    query: >-
+      histogram_quantile(0.95,
+        sum by (le, service) (
+          rate(http_server_request_duration_seconds_bucket{guardian_partition="agent"}[5m])
+        )
+      )
+    rangeMinutes: 60
+    refreshIntervalSec: 30
+    createdAt: "2026-11-05T08:00:00Z"
+    partitions: [agent]
+  - id: agent-cpu
+    title: Agent CPU by service
+    query: >-
+      sum by (service) (
+        rate(process_cpu_seconds_total{guardian_partition="agent"}[5m])
+      )
+    rangeMinutes: 60
+    refreshIntervalSec: 30
+    createdAt: "2026-11-05T08:00:00Z"
+    partitions: [agent]
+savedDashboards:
+  - id: agent-overview
+    name: Agent overview
+    partitions: [agent]
+    graphs:
+      - title: Request rate
+        query: >-
+          sum by (service) (
+            rate(http_server_request_duration_seconds_count{guardian_partition="agent"}[5m])
+          )
+        rangeMinutes: 60
+        refreshIntervalSec: 30
+        partitions: [agent]
+      - title: p95 latency
+        query: >-
+          histogram_quantile(0.95,
+            sum by (le, service) (
+              rate(http_server_request_duration_seconds_bucket{guardian_partition="agent"}[5m])
+            )
+          )
+        rangeMinutes: 60
+        refreshIntervalSec: 30
+        partitions: [agent]
+    createdAt: "2026-11-05T08:00:00Z"
+    partitions: [agent]
+    updatedAt: "2026-11-05T08:00:00Z"

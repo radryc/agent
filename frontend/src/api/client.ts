@@ -9,7 +9,24 @@ import type {
 
 export interface AgentSettings {
   system_prompt: string;
+  llm_base_url: string;
   llm_model: string;
+  llm_api_key: string;
+  llm_api_key_set?: boolean;
+  llm_api_key_masked?: string;
+  llm_grammar_enabled: boolean;
+  llm_tool_grammar: string;
+  llm_request_extra: string;
+  llm_hybrid_enabled: boolean;
+  llm_hybrid_after_rounds: number;
+  llm_max_tool_rounds: number;
+  llm_fallback_base_url: string;
+  llm_fallback_model: string;
+  llm_fallback_api_key: string;
+  llm_fallback_api_key_set?: boolean;
+  llm_fallback_api_key_masked?: string;
+  llm_fallback_provider: string;
+  llm_providers_configured?: boolean;
   gemini_api_key: string;
   gemini_api_key_set?: boolean;
   gemini_api_key_masked?: string;
@@ -33,6 +50,7 @@ export interface AgentSettings {
   steve_system_prompt: string;
   auto_switch_enabled: boolean;
   auto_push_enabled: boolean;
+  agent_flow_enabled: boolean;
   // MonoFS workspace
   monofs_router: string;
   monofs_mount: string;
@@ -126,12 +144,35 @@ export interface ProviderInfo {
   name: string;
 }
 
+export interface ModelPreset {
+  id: string;
+  label: string;
+  model: string;
+  repo: string;
+  file: string;
+  license: string;
+}
+
 export interface AgentModelsResponse {
   local: {
     provider: string;
     base_url: string;
     current_model: string;
     models: ModelInfo[];
+    presets?: ModelPreset[];
+    grammar_enabled?: boolean;
+  };
+  profiles?: Array<{
+    id: string;
+    available: boolean;
+    label: string;
+    base_url?: string;
+    model?: string;
+  }>;
+  hybrid?: {
+    enabled: boolean;
+    fallback_ready: boolean;
+    after_rounds: number;
   };
   opencode: {
     provider: string;
@@ -251,6 +292,7 @@ export const api = {
       workspace: WorkspaceStatus;
       auto_switch_enabled: boolean;
       auto_push_enabled: boolean;
+      agent_flow_enabled: boolean;
       agents: Array<{
         id: string;
         name: string;

@@ -1,0 +1,8 @@
+{
+  "title": "Agent request rate",
+  "query": "sum by (service) (rate(http_server_request_duration_seconds_count{guardian_partition=\"agent\"}[5m]))",
+  "rangeMinutes": 60,
+  "refreshIntervalSec": 30,
+  "createdAt": "2026-11-05T08:00:00Z",
+  "partitions": ["agent"]
+}

@@ -31,6 +31,37 @@ export interface HealthStatus {
 export type PersonaId = "otto" | "steve";
 export type PersonaType = "auto" | PersonaId;
 
+export type CrewAgentId =
+  | "telemetry_hound"
+  | "topology_auditor"
+  | "software_steve"
+  | "outage_otto";
+
+export interface CrewStepEvent {
+  type: "crew_step";
+  agent_id: CrewAgentId;
+  agent_name: string;
+  task_name: string;
+  status: "started" | "tool_call" | "tool_result" | "completed" | "failed";
+  tool?: string;
+  tool_args?: Record<string, unknown>;
+  summary?: string;
+  ts: string;
+}
+
+export interface ApprovalRequestEvent {
+  type: "approval_required";
+  id: string;
+  tool:
+    | "guardian_reconcile"
+    | "guardian_deploy_partition"
+    | "workspace_commit"
+    | "workspace_push";
+  args: Record<string, unknown>;
+  rationale: string;
+  diff?: string;
+}
+
 export interface WSIncoming {
   type:
     | "token"
@@ -39,6 +70,8 @@ export interface WSIncoming {
     | "session"
     | "persona"
     | "pong"
+    | "crew_step"
+    | "approval_required"
     | "exec_output"
     | "exec_done"
     | "exec_cwd"
@@ -63,6 +96,20 @@ export interface WSIncoming {
   engine?: string;
   engine_label?: string;
   reason?: string;
+  // crew_step fields
+  agent_id?: CrewAgentId;
+  agent_name?: string;
+  task_name?: string;
+  status?: CrewStepEvent["status"];
+  tool?: string;
+  tool_args?: Record<string, unknown>;
+  summary?: string;
+  ts?: string;
+  // approval_required fields
+  id?: string;
+  args?: Record<string, unknown>;
+  rationale?: string;
+  diff?: string;
 }
 
 export type AgentType = "local" | "opencode";
@@ -78,7 +125,8 @@ export interface WSOutgoing {
     | "terminal_input"
     | "terminal_resize"
     | "terminal_signal"
-    | "terminal_history";
+    | "terminal_history"
+    | "approval";
   data?: string;
   session_id?: string;
   agent?: AgentType;
@@ -87,4 +135,7 @@ export interface WSOutgoing {
   rows?: number;
   signal?: string;
   command?: string;
+  // approval response
+  id?: string;
+  approved?: boolean;
 }

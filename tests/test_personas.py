@@ -25,6 +25,7 @@ class PersonaRegistryTest(unittest.TestCase):
             "monofs_search",
             "doctor_logs_search",
             "agent_sso_status",
+            "doctor_graph_validate",
             "guardian_overview",
             "guardian_asset_describe",
             "guardian_intent_plan",
@@ -71,6 +72,8 @@ class PersonaRegistryTest(unittest.TestCase):
         self.assertIn("doctor_metrics_query", prompt)
         self.assertIn("guardian-partition-authoring", prompt)
         self.assertIn("query-agent-telemetry", prompt)
+        self.assertIn("create-doctor-graphs", prompt)
+        self.assertIn("validate_graph_file.py", prompt)
 
     def test_steve_prompt_override_wins(self):
         config._runtime_overrides["steve_system_prompt"] = "custom steve prompt"
