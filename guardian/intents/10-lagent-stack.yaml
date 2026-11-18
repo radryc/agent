@@ -85,6 +85,38 @@ spec:
           - volume: lagent-data
             path: /data
 
+
+    # --- Nightwatch analysis service (on-demand postmortem investigations) ---
+    - type: Compute
+      name: lagent-nightwatch
+      dependsOn:
+        - lagent-llm
+        - lagent-data
+      properties:
+        command:
+          - sh
+          - -c
+          - exec uvicorn app.nightwatch.main:app --host 0.0.0.0 --port 8091
+        image: lagent-backend:latest
+        ports:
+          - name: http
+            containerPort: 8091
+            protocol: TCP
+        env:
+          NIGHTWATCH_ENABLED: "false"
+          NIGHTWATCH_PROXY_TOKEN: dev-nightwatch-token
+          NIGHTWATCH_DB_URL: sqlite+aiosqlite:////data/nightwatch.db
+          NIGHTWATCH_TENANT: default
+          NIGHTWATCH_SENTINEL_URL: http://host.docker.internal:18082
+          DOCTOR_QUERY_URL: http://host.docker.internal:18080
+          GUARDIAN_URL: http://host.docker.internal:8090
+          LLM_BASE_URL: http://lagent-llm:8080
+          NIGHTWATCH_LLM_ENABLED: "true"
+          OTEL_ENABLED: "false"
+        volumeMounts:
+          - volume: lagent-data
+            path: /data
+
     # --- Frontend (React + nginx) ---
     - type: Compute
       name: lagent-frontend

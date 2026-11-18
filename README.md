@@ -11,7 +11,7 @@ flowchart LR
 
     API --> AUTH[OIDC / SSO provider]
     API --> SESS[(SQLite<br/>sessions + messages)]
-    API --> FLOW[SreFlow<br/>route classifier]
+    API --> FLOW[StrataSREFlow<br/>route classifier]
     FLOW --> LOOP[Tool loop /<br/>LLM client]
     FLOW --> SPEC[Specialists<br/>TelemetryHound<br/>TopologyAuditor<br/>Otto / Steve]
     LOOP --> LLM[llama.cpp local<br/>or hosted OpenAI-compatible]
@@ -40,7 +40,7 @@ The backend runs as a single FastAPI application. Docker Compose also runs a lla
 | Component | Responsibility |
 | --- | --- |
 | Backend API (`backend/app/api`) | Chat over `POST /api/chat` and `WS /ws/chat`; session CRUD; agent status/models; settings; OIDC auth; Guardian read proxy; Nightwatch read proxy; proposal creation; health; generated media. |
-| Agent orchestration (`agent/sre_flow.py`) | `SreFlow` classifies each turn into `mutate_infra`, `triage`, `crew_collab`, `code_fix`, or `general`, then runs the matching deterministic sequence. |
+| Agent orchestration (`agent/sre_flow.py`) | `StrataSREFlow` classifies each turn into `mutate_infra`, `triage`, `crew_collab`, `code_fix`, or `general`, then runs the matching deterministic sequence. |
 | Tool loop (`agent/loop.py`) | Parses JSON tool calls (and DeepSeek DSML markup), executes every call in a completion, enforces telemetry tool use, retries malformed calls with a GBNF grammar, and escalates to a fallback model when the loop stalls. |
 | Personas and routing (`agent/personas.py`, `agent/router.py`) | Otto (SRE) and Steve (software engineering) personas. Auto routing uses explicit `@otto`/`@steve`, keyword votes, sticky follow-up handling, and a local-model classifier. |
 | Specialists (`agent/specialists.py`) | Scoped mini tool loops with explicit allowlists: TelemetryHound, TopologyAuditor, OutageOtto synthesis, and SoftwareSteve. |
@@ -82,13 +82,13 @@ Configuration is read from environment variables by `pydantic-settings`. Runtime
 | Fallback and providers | `LLM_FALLBACK_BASE_URL`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_PROVIDER`, `LLM_PROVIDERS_JSON` | Named provider profiles are JSON objects and are selected with `provider:<name>`. |
 | Steve engine | `STEVE_ENGINE`, `STEVE_LLM_BASE_URL`, `STEVE_LLM_MODEL`, `STEVE_LLM_API_KEY`, `AUTO_SWITCH_ENABLED` | Empty engine auto-detects OpenCode, then DeepSeek, then local. Otto always uses the local profile. |
 | OpenCode | `OPENCODE_API_KEY`, `OPENCODE_SERVER_URL`, `OPENCODE_MODEL`, `OPENCODE_PROVIDER_ID`, `OPENCODE_SYSTEM_PROMPT` | Optional external coding engine for Steve. |
-| Agent behavior | `AGENT_NAME`, `AGENT_SYSTEM_PROMPT`, `AGENT_FLOW_ENABLED`, `AUTO_PUSH_ENABLED` | `AGENT_FLOW_ENABLED=false` falls back to the legacy single-agent loop. `AUTO_PUSH_ENABLED` waives commit/push confirmation. |
+| Agent behavior | `AGENT_NAME`, `AGENT_SYSTEM_PROMPT`, `AGENT_FLOW_ENABLED`, `AUTO_PUSH_ENABLED`, `TRIAGE_LOOKBACK_MINUTES`, `TRIAGE_PREROLL_MINUTES`, `TRIAGE_MAX_WINDOW_MINUTES`, `TRIAGE_MAX_PARALLEL_QUERIES` | `AGENT_FLOW_ENABLED=false` falls back to the legacy single-agent loop. `AUTO_PUSH_ENABLED` waives commit/push confirmation. `TRIAGE_*` vars bound incident-scoped telemetry windows and query concurrency. |
 | Persistence | `DATABASE_URL` | Session and message store; default SQLite at `/data/lagent.db`. |
 | SSO / OIDC | `AGENT_OIDC_ISSUER`, `AGENT_OIDC_TOKEN_URL`, `AGENT_OIDC_AUTHORIZATION_URL`, `AGENT_OIDC_DEVICE_AUTHORIZATION_URL`, `AGENT_OIDC_REDIRECT_URL`, `AGENT_OIDC_CLIENT_ID`, `AGENT_OIDC_CLIENT_SECRET`, `AGENT_OIDC_AUDIENCE`, `AGENT_OIDC_SCOPE`, `AGENT_OIDC_TOKEN`, `AGENT_OIDC_PUBLIC_BASE_URL` | Static token, browser authorization-code + PKCE, device flow, and client credentials. |
 | Platform services | `GUARDIAN_URL`, `DOCTOR_QUERY_URL`, `LB_EDGE_REGISTRY_URL` | Guardian, Doctor query, and LB Edge registry endpoints. |
-| MonoFS workspace | `MONOFS_ROUTER`, `MONOFS_MOUNT`, `MONOFS_OVERLAY` | Empty router leaves workspace tools unavailable. The backend entrypoint starts `monofs-client` when a router is set. |
-| Nightwatch | `NIGHTWATCH_URL`, `NIGHTWATCH_PROXY_TOKEN`, `NIGHTWATCH_ENABLED`, `NIGHTWATCH_MODE`, `NIGHTWATCH_POLL_INTERVAL_SECONDS`, `NIGHTWATCH_SENTINEL_URL`, `NIGHTWATCH_DB_URL`, `NIGHTWATCH_TENANT`, `NIGHTWATCH_ASSIGNMENT_LABEL`, `NIGHTWATCH_ESCALATION_CONFIDENCE`, `NIGHTWATCH_ESCALATION_AFTER_MINUTES`, `NIGHTWATCH_LLM_ENABLED`, `NIGHTWATCH_LLM_PROFILE` | Shadow mode is enforced. The interactive backend only proxies Nightwatch reads. |
-| Telemetry | `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_INSECURE`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_METRIC_EXPORT_INTERVAL_MS` | OTLP gRPC traces and metrics; disabled unless `OTEL_ENABLED=true`. |
+| MonoFS workspace | `MONOFS_ROUTER`, `MONOFS_MOUNT`, `MONOFS_OVERLAY_DIR`, `MONOFS_OVERLAY`, `MONOFS_SEARCH_ADDR` | Empty router leaves workspace tools unavailable. `MONOFS_OVERLAY_DIR` takes precedence over `MONOFS_OVERLAY` and is shared with `monofs-client` for `session.sock`. |
+| Nightwatch | `NIGHTWATCH_URL`, `NIGHTWATCH_PROXY_TOKEN`, `NIGHTWATCH_ENABLED`, `NIGHTWATCH_MODE`, `NIGHTWATCH_POLL_INTERVAL_SECONDS`, `NIGHTWATCH_SENTINEL_URL`, `NIGHTWATCH_DB_URL`, `NIGHTWATCH_TENANT`, `NIGHTWATCH_ASSIGNMENT_LABEL`, `NIGHTWATCH_ESCALATION_CONFIDENCE`, `NIGHTWATCH_ESCALATION_AFTER_MINUTES`, `NIGHTWATCH_CORRELATION_WINDOW_MINUTES`, `NIGHTWATCH_RETENTION_DAYS`, `NIGHTWATCH_MAX_CONCURRENT_INVESTIGATIONS`, `NIGHTWATCH_RCA_QUERIES_FILE`, `NIGHTWATCH_LLM_ENABLED`, `NIGHTWATCH_LLM_PROFILE` | Shadow mode is enforced. The interactive backend only proxies Nightwatch reads. |
+| Telemetry | `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_INSECURE`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_METRIC_EXPORT_INTERVAL_MS` | OTLP gRPC traces and metrics; disabled by default in `config.py` unless `OTEL_ENABLED=true` (enabled by default in `docker-compose.yml`). |
 
 ## Build and run
 
@@ -134,7 +134,7 @@ npm run build      # tsc -b && vite build
 
 ### Tests
 
-`tests/` contains 16 unittest-style modules (about 150 test functions) covering routing, personas, the SRE flow, tool loop and hybrid behavior, Guardian detail rendering, workspace confinement, OIDC, proposals, Nightwatch, graph validation, and Compose configuration:
+`tests/` contains 16 unittest-style modules (165 test functions) covering routing, personas, the SRE flow, tool loop and hybrid behavior, Guardian detail rendering, workspace confinement, OIDC, proposals, Nightwatch, graph validation, and Compose configuration:
 
 ```bash
 python -m unittest discover -s tests
@@ -166,7 +166,7 @@ Five tools are marked mutating: `guardian_reconcile`, `guardian_deploy_partition
 
 The OIDC provider resolves access tokens in this order: static `AGENT_OIDC_TOKEN`, a valid interactive user token, a refresh of that user token, a cached machine token, then a client-credentials grant. Browser login uses authorization code with PKCE; the device flow is also supported. A signed-in user token takes precedence over the machine identity so Doctor visibility follows the user.
 
-The same access token is used for Guardian, Doctor, MonoFS, and Nightwatch calls. Guardian and Doctor requests carry it as a Bearer header; MonoFS CLI calls receive `MONOFS_TOKEN` in their environment. The Nightwatch proxy uses `X-Nightwatch-Token`. LLM API keys are sent as bearer tokens to their configured OpenAI-compatible endpoints.
+The same access token is used for Guardian, Doctor, MonoFS, and Nightwatch calls. Guardian and Doctor requests carry it as a Bearer header; MonoFS CLI calls receive `MONOFS_TOKEN` in their environment. The Nightwatch proxy uses `X-Nightwatch-Token`. For an interactive SSO user, the Agent also resolves the user’s Doctor partition scope and forwards it as `X-Nightwatch-Partition-Access`, so the Nightwatch UI only shows incidents for partitions that user can access. LLM API keys are sent as bearer tokens to their configured OpenAI-compatible endpoints.
 
 The settings API never returns stored secrets or the `llm_providers_json` blob; it returns masked values and `*_set` flags. Blank secret values in a settings update are ignored. The backend container runs as the `developer` user, which the image grants passwordless sudo and which has `/dev/fuse` access in Compose; terminal mode is an interactive shell inside that container and is not approval-gated, so treat the backend as a trusted deployment boundary.
 

@@ -153,3 +153,33 @@ def apply_nightwatch_policy(
                 f"{escalation_confidence:.2f}"
             )
     return verdict
+
+
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+)
+_BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9\-._~+/]+=*")
+_AWS_ACCESS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_SK_API_KEY_RE = re.compile(r"\bsk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{16,}\b")
+_SSN_RE = re.compile(r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b")
+_PAN_CANDIDATE_RE = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
+
+
+def _redact_pan_match(match: re.Match[str]) -> str:
+    digits = re.sub(r"\D", "", match.group(0))
+    if 13 <= len(digits) <= 19:
+        return "[REDACTED_PAN]"
+    return match.group(0)
+
+
+def redact_sensitive_text(text: str) -> str:
+    """Redact credentials, private keys, API tokens, and PII from outgoing text."""
+    if not text or not isinstance(text, str):
+        return text
+    result = _PRIVATE_KEY_RE.sub("[REDACTED_PRIVATE_KEY]", text)
+    result = _BEARER_TOKEN_RE.sub("Bearer [REDACTED_TOKEN]", result)
+    result = _AWS_ACCESS_KEY_RE.sub("[REDACTED_AWS_KEY]", result)
+    result = _SK_API_KEY_RE.sub("[REDACTED_API_KEY]", result)
+    result = _SSN_RE.sub("[REDACTED_SSN]", result)
+    result = _PAN_CANDIDATE_RE.sub(_redact_pan_match, result)
+    return result

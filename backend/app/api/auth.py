@@ -36,6 +36,7 @@ async def auth_login(request: Request, next: str = "/"):
 
 @router.get("/callback")
 async def auth_callback(
+    request: Request,
     code: str = "",
     state: str = "",
     error: str = "",
@@ -51,10 +52,15 @@ async def auth_callback(
         return RedirectResponse(f"/?sso_error={quote(str(exc))}", status_code=302)
     response = RedirectResponse(result.get("next_path") or "/", status_code=302)
     # Marker for the frontend; the authoritative state is the backend token.
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    )
+    is_https = request.url.scheme == "https" or forwarded_proto == "https"
     response.set_cookie(
         "lagent_sso",
         "1",
         httponly=True,
+        secure=is_https,
         samesite="lax",
         max_age=8 * 3600,
     )

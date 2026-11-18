@@ -6,12 +6,45 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Request
 
+from app.auth.oidc import oidc
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["nightwatch"])
 
 _TIMEOUT = httpx.Timeout(10.0)
+
+
+async def _scope_headers() -> dict[str, str]:
+    """Return the partition scope for the signed-in user.
+
+    Doctor owns the access policy. When the browser session is a real user we
+    ask Doctor for that user's accessible partitions and forward only the list
+    to Nightwatch; Nightwatch never needs the raw OIDC token.
+    """
+    try:
+        status = await oidc.status()
+    except Exception:
+        return {}
+    if not status.get("authenticated_as_user"):
+        return {}
+    headers = await oidc.auth_headers()
+    if not headers:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
+            response = await client.get(
+                f"{settings.doctor_query_url.rstrip('/')}/v1/ui/config"
+            )
+        if response.status_code != 200:
+            return {}
+        parts = response.json().get("accessible_partitions")
+        if isinstance(parts, list):
+            value = ",".join(str(p) for p in parts if str(p).strip())
+            return {"X-Nightwatch-Partition-Access": value or "__none__"}
+    except Exception as exc:
+        logger.warning("Nightwatch partition scope lookup failed: %s", exc)
+    return {}
 
 
 def _empty(path: str) -> dict[str, Any]:
@@ -62,6 +95,7 @@ async def _proxy(path: str, request: Request) -> dict[str, Any]:
     headers: dict[str, str] = {}
     if settings.nightwatch_proxy_token:
         headers["X-Nightwatch-Token"] = settings.nightwatch_proxy_token
+    headers.update(await _scope_headers())
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
             response = await client.get(url, params=dict(request.query_params))
@@ -115,6 +149,7 @@ async def incident(incident_id: str, request: Request):
     headers: dict[str, str] = {}
     if settings.nightwatch_proxy_token:
         headers["X-Nightwatch-Token"] = settings.nightwatch_proxy_token
+    headers.update(await _scope_headers())
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
             response = await client.get(url)

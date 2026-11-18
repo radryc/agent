@@ -54,6 +54,10 @@ class SettingsPayload(BaseModel):
     auto_switch_enabled: bool | None = None
     auto_push_enabled: bool | None = None
     agent_flow_enabled: bool | None = None
+    triage_lookback_minutes: int | None = None
+    triage_preroll_minutes: int | None = None
+    triage_max_window_minutes: int | None = None
+    triage_max_parallel_queries: int | None = None
     monofs_router: str | None = None
     monofs_mount: str | None = None
     monofs_overlay: str | None = None

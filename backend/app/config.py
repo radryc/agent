@@ -14,6 +14,14 @@ _runtime_overrides: dict = {}
 
 
 class Settings(BaseSettings):
+    cors_allowed_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8080",
+    ]
     llm_base_url: str = "http://llm:8080"
     agent_name: str = "StrataDev"
     agent_system_prompt: str = (
@@ -85,6 +93,15 @@ class Settings(BaseSettings):
     # Deterministic specialist flow (TelemetryHound / TopologyAuditor / Otto /
     # Steve). Disable to fall back to the legacy single-agent tool loop.
     agent_flow_enabled: bool = True
+    # Incident-scoped evidence collection. Triage queries are anchored to the
+    # alert start time (when present) and never scan further back than
+    # triage_max_window_minutes. triage_max_parallel_queries bounds how many
+    # Doctor/Guardian requests a single triage may have in flight, so an
+    # investigation cannot stampede the telemetry backend.
+    triage_lookback_minutes: int = 30
+    triage_preroll_minutes: int = 5
+    triage_max_window_minutes: int = 120
+    triage_max_parallel_queries: int = 3
 
     # MonoFS writable workspace (used by Steve to edit/commit/push code).
     # MONOFS_OVERLAY_DIR is the same variable monofs-client uses to place
@@ -224,6 +241,10 @@ def get_all_runtime_settings() -> dict:
         "auto_switch_enabled": settings.auto_switch_enabled,
         "auto_push_enabled": settings.auto_push_enabled,
         "agent_flow_enabled": settings.agent_flow_enabled,
+        "triage_lookback_minutes": settings.triage_lookback_minutes,
+        "triage_preroll_minutes": settings.triage_preroll_minutes,
+        "triage_max_window_minutes": settings.triage_max_window_minutes,
+        "triage_max_parallel_queries": settings.triage_max_parallel_queries,
         "monofs_router": settings.monofs_router,
         "monofs_mount": settings.monofs_mount,
         "monofs_overlay": settings.monofs_overlay,

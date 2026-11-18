@@ -79,12 +79,31 @@ def _pkce_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+def _b64url_decode_json(segment: str) -> dict[str, Any]:
+    padding = "=" * (-len(segment) % 4)
+    raw = base64.urlsafe_b64decode(segment + padding)
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("JWT segment is not a JSON object")
+    return data
+
+
+def _decode_jwt_parts(token: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    parts = token.split(".")
+    if len(parts) != 3 or not all(parts[:2]):
+        raise OIDCError("invalid id_token format")
+    try:
+        header = _b64url_decode_json(parts[0])
+        claims = _b64url_decode_json(parts[1])
+    except Exception as exc:
+        raise OIDCError(f"invalid id_token encoding: {exc}") from exc
+    return header, claims
+
+
 def _jwt_subject(token: str) -> str:
     """Decode the JWT payload for display only; never trust it for authorization."""
     try:
-        payload = token.split(".")[1]
-        padding = "=" * (-len(payload) % 4)
-        data = json.loads(base64.urlsafe_b64decode(payload + padding))
+        _, data = _decode_jwt_parts(token)
         return str(data.get("email") or data.get("sub") or "")
     except Exception:
         return ""
@@ -322,6 +341,43 @@ class OIDCTokenProvider:
         separator = "&" if "?" in authorization_url else "?"
         return authorization_url + separator + urlencode(params)
 
+    def _validate_id_token(
+        self, id_token: str, *, expected_nonce: str = ""
+    ) -> dict[str, Any]:
+        """Validate id_token structure and claims (iss, aud, exp, nonce)."""
+        _, claims = _decode_jwt_parts(id_token)
+
+        expected_issuer = self._setting("agent_oidc_issuer").rstrip("/")
+        if expected_issuer:
+            token_iss = str(claims.get("iss") or "").rstrip("/")
+            if token_iss != expected_issuer:
+                raise OIDCError("id_token issuer mismatch")
+
+        client_id = self._setting("agent_oidc_client_id")
+        if client_id:
+            aud = claims.get("aud")
+            if isinstance(aud, list):
+                if client_id not in [str(a) for a in aud]:
+                    raise OIDCError("id_token audience mismatch")
+                if len(aud) > 1 and "azp" in claims and str(claims["azp"]) != client_id:
+                    raise OIDCError("id_token authorized party mismatch")
+            elif str(aud or "") != client_id:
+                raise OIDCError("id_token audience mismatch")
+
+        if "exp" in claims and claims["exp"] is not None:
+            try:
+                exp = float(claims["exp"])
+            except (TypeError, ValueError) as exc:
+                raise OIDCError("id_token has invalid exp claim") from exc
+            if time.time() >= exp:
+                raise OIDCError("id_token has expired")
+
+        if "nonce" in claims and expected_nonce:
+            if str(claims.get("nonce") or "") != expected_nonce:
+                raise OIDCError("id_token nonce mismatch")
+
+        return claims
+
     async def complete_login(self, code: str, state: str) -> dict[str, Any]:
         flow = self._login
         if flow is None:
@@ -347,6 +403,9 @@ class OIDCTokenProvider:
             client_id=client_id,
             client_secret=client_secret,
         )
+        id_token = str(payload.get("id_token") or "").strip()
+        if id_token:
+            self._validate_id_token(id_token, expected_nonce=flow.nonce)
         self._login = None
         self._store_user(payload)
         return {

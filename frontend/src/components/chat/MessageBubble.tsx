@@ -4,6 +4,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AgentAvatar, { type AvatarPersona } from "./AgentAvatar";
 import CodeBlock from "./CodeBlock";
+import VerdictCard, { type Verdict } from "./VerdictCard";
 import type { Message } from "../../types";
 
 interface MessageBubbleProps {
@@ -26,6 +27,64 @@ const PERSONA_BADGES: Record<AvatarPersona, string> = {
 
 const VIDEO_RE = /\.(mp4|webm|mov|mkv|avi|m4v)(\?|$)/i;
 const AUDIO_RE = /\.(mp3|wav|flac|ogg|m4a|aac)(\?|$)/i;
+
+/**
+ * Older triage messages stored the raw verdict JSON followed by markdown.
+ * Split it so the JSON becomes a structured card instead of a wall of text.
+ * Balances braces while ignoring braces inside JSON strings.
+ */
+function splitLeadingVerdict(
+  text: string,
+): { verdict: Verdict; rest: string } | null {
+  const start = text.search(/\S/);
+  if (start < 0 || text[start] !== "{") return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let end = -1;
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end < 0) return null;
+
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1)) as Verdict;
+    if (
+      !parsed ||
+      typeof parsed.summary !== "string" ||
+      (!parsed.root_cause_partition &&
+        !parsed.rationale &&
+        !parsed.recommended_action)
+    ) {
+      return null;
+    }
+    return { verdict: parsed, rest: text.slice(end + 1).trim() };
+  } catch {
+    return null;
+  }
+}
 
 const markdownComponents: Components = {
   a: ({ href, children }) => {
@@ -76,6 +135,8 @@ export default function MessageBubble({
   const isUser = message.role === "user";
   const content = isStreaming ? streamContent || "" : message.content;
   const activePersona: AvatarPersona = persona ?? message.persona ?? "otto";
+  const verdictSplit =
+    !isUser && !isStreaming ? splitLeadingVerdict(content) : null;
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(content);
@@ -139,14 +200,33 @@ export default function MessageBubble({
         </div>
 
         <div className="px-4 py-3">
-          <div className="md-content text-sm leading-relaxed text-gray-200">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {content}
-            </ReactMarkdown>
-            {isStreaming && (
-              <span className="ml-0.5 inline-block h-4 w-2 animate-blink bg-accent-cyan align-middle" />
-            )}
-          </div>
+          {verdictSplit ? (
+            <div className="space-y-3">
+              <VerdictCard verdict={verdictSplit.verdict} />
+              {verdictSplit.rest && (
+                <div className="md-content text-sm leading-relaxed text-gray-200">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={markdownComponents}
+                  >
+                    {verdictSplit.rest}
+                  </ReactMarkdown>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="md-content text-sm leading-relaxed text-gray-200">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={markdownComponents}
+              >
+                {content}
+              </ReactMarkdown>
+              {isStreaming && (
+                <span className="ml-0.5 inline-block h-4 w-2 animate-blink bg-accent-cyan align-middle" />
+              )}
+            </div>
+          )}
         </div>
 
         {!isStreaming && content && (

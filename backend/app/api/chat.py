@@ -145,7 +145,12 @@ async def ws_chat(websocket: WebSocket):
             if msg_type == "approval":
                 approval_id = str(data.get("id") or "")
                 approved = bool(data.get("approved"))
-                result = await resolve_approval(approval_id, approved)
+                req_session_id = data.get("session_id")
+                result = await resolve_approval(
+                    approval_id,
+                    approved,
+                    session_id=str(req_session_id) if req_session_id else None,
+                )
                 result_session = result.get("session_id")
                 if result_session:
                     await safe_send({"type": "session", "session_id": result_session})

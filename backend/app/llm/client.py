@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, AsyncIterator
+from urllib.parse import urlsplit
 
 import httpx
 
+from app.agent.guardrails import redact_sensitive_text
 from app.config import get_runtime, runtime_bool, settings
 
 logger = logging.getLogger(__name__)
@@ -283,6 +285,45 @@ async def close_client() -> None:
     _clients.clear()
 
 
+def is_external_llm_url(base_url: str) -> bool:
+    """Return True when base_url points to an external (non-local/non-cluster) LLM."""
+    raw = str(base_url or "").strip()
+    if not raw:
+        return False
+    host = (urlsplit(raw).hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal", "llm"}:
+        return False
+    if host.endswith(".svc.cluster.local") or host.endswith(".local"):
+        return False
+    return True
+
+
+def _redact_messages(messages: list[dict]) -> list[dict]:
+    redacted: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            redacted.append(msg)
+            continue
+        copy = dict(msg)
+        content = copy.get("content")
+        if isinstance(content, str):
+            copy["content"] = redact_sensitive_text(content)
+        elif isinstance(content, list):
+            new_parts = []
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    part_copy = dict(part)
+                    part_copy["text"] = redact_sensitive_text(part_copy["text"])
+                    new_parts.append(part_copy)
+                else:
+                    new_parts.append(part)
+            copy["content"] = new_parts
+        redacted.append(copy)
+    return redacted
+
+
 async def chat_completion(
     messages: list[dict],
     *,
@@ -293,9 +334,14 @@ async def chat_completion(
     grammar: str | None = None,
 ) -> AsyncIterator[str] | str:
     client, config = _get_client(profile)
+    outgoing_messages = (
+        _redact_messages(messages)
+        if is_external_llm_url(config.get("base_url", ""))
+        else messages
+    )
     payload: dict = {
         "model": config["model"],
-        "messages": messages,
+        "messages": outgoing_messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": stream,
