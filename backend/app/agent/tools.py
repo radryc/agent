@@ -3062,9 +3062,9 @@ register(Skill(
     handler=workspace_tools.workspace_read,
 ))
 
-# Intentionally non-mutating: writes are sandboxed to the local MonoFS overlay
-# (via workspace._resolve_path) so Steve can generate diffs for review;
-# persistent/upstream mutations (workspace_commit, workspace_push) remain gated.
+# Writes are sandboxed to the local MonoFS overlay (via workspace._resolve_path)
+# but still mutate the working tree, so they require the normal confirmation
+# gate. Commit/push (persistent/upstream mutations) remain gated as well.
 register(Skill(
     name="workspace_write", category="workspace",
     description="Write a file in the MonoFS workspace (creates or overwrites). Edits are local overlay changes until committed. Provide the complete file content.",
@@ -3074,6 +3074,7 @@ register(Skill(
         "create_dirs": "Create parent directories when missing (default true)",
     },
     status_prefix="Writing workspace file",
+    mutating=True,
     handler=workspace_tools.workspace_write,
 ))
 

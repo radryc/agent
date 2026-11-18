@@ -1629,17 +1629,23 @@ async def resolve_approval(
 
     Returns a small payload used by the WebSocket layer to stream the result.
     """
+    request_session = str(session_id or "").strip()
+    if not request_session:
+        return {
+            "approved": False,
+            "text": "Approval request requires an authenticated session.",
+        }
     approval = _pending_approvals.get(approval_id)
     if approval is None:
         return {
             "approved": False,
             "text": "This approval request has expired or was already handled.",
         }
-    if session_id is not None and str(session_id) != approval.session_id:
+    if request_session != approval.session_id:
         return {
             "approved": False,
             "text": "Approval request does not belong to this session.",
-            "session_id": session_id,
+            "session_id": request_session,
         }
     _pending_approvals.pop(approval_id, None)
     if not approved:

@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 import app.config as config  # noqa: E402
 from app.agent import sre_flow  # noqa: E402
 from app.agent.guardrails import redact_sensitive_text  # noqa: E402
-from app.agent.tools import get_skill  # noqa: E402
+from app.agent.tools import execute_tool, get_skill  # noqa: E402
 from app.api import agent as agent_api  # noqa: E402
 from app.api import chat as chat_api  # noqa: E402
 from app.api import guardian as guardian_api  # noqa: E402
@@ -384,10 +384,43 @@ class ApprovalSessionBindingTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(right["approved"])
         self.assertNotIn(approval.id, sre_flow._pending_approvals)
 
-    def test_workspace_commit_and_push_remain_mutating(self):
-        self.assertFalse(get_skill("workspace_write").mutating)
+    def test_workspace_mutations_require_confirmation(self):
+        self.assertTrue(get_skill("workspace_write").mutating)
         self.assertTrue(get_skill("workspace_commit").mutating)
         self.assertTrue(get_skill("workspace_push").mutating)
+
+    async def test_resolve_approval_requires_a_session_id(self):
+        approval = sre_flow._register_approval(
+            "session-owner",
+            "guardian_reconcile",
+            {"partition": "monofs"},
+            rationale="test",
+        )
+        self.addCleanup(sre_flow._pending_approvals.pop, approval.id, None)
+
+        for missing in (None, "", "   "):
+            result = await sre_flow.resolve_approval(approval.id, True, session_id=missing)
+            self.assertFalse(result["approved"])
+            self.assertIn("requires an authenticated session", result["text"])
+            self.assertIn(approval.id, sre_flow._pending_approvals)
+
+    async def test_workspace_write_is_blocked_without_confirm(self):
+        skill = get_skill("workspace_write")
+        handler = AsyncMock(return_value="ok")
+        with patch.object(skill, "handler", handler):
+            result = await execute_tool(
+                "workspace_write", {"path": "a.txt", "content": "x"}
+            )
+        self.assertIn("mutates system state", result)
+        handler.assert_not_awaited()
+
+        with patch.object(skill, "handler", handler):
+            result = await execute_tool(
+                "workspace_write",
+                {"path": "a.txt", "content": "x", "confirm": True},
+            )
+        self.assertEqual(result, "ok")
+        handler.assert_awaited_once()
 
 
 class ExternalLLMRedactionTest(unittest.IsolatedAsyncioTestCase):

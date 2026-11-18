@@ -276,7 +276,9 @@ class FlowRouteTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(sre_flow, "execute_tool", fake_execute), patch.object(
             sre_flow.session_mgr, "add_message", AsyncMock()
         ):
-            result = await sre_flow.resolve_approval(approval[0]["id"], True)
+            result = await sre_flow.resolve_approval(
+                approval[0]["id"], True, session_id="session-1"
+            )
         self.assertTrue(result["approved"])
         self.assertEqual(executed[0][0], "guardian_reconcile")
         self.assertTrue(executed[0][1]["confirm"])
