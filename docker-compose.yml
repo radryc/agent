@@ -110,6 +110,10 @@ services:
       AGENT_OIDC_PUBLIC_BASE_URL: ${AGENT_OIDC_PUBLIC_BASE_URL:-}
       AGENT_ADMIN_GROUPS: ${AGENT_ADMIN_GROUPS:-}
       AGENT_SESSION_SECRET: ${AGENT_SESSION_SECRET:-}
+      # API auth is required by default (fail closed). Set AGENT_API_TOKEN or
+      # configure OIDC. AGENT_AUTH_REQUIRED=false is for isolated local dev only.
+      AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
+      AGENT_AUTH_REQUIRED: ${AGENT_AUTH_REQUIRED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:14317}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-agent.agent.lagent-backend}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-guardian.partition=agent,guardian.intent=agent,guardian.asset=lagent-backend,guardian.asset.type=Compute,guardian.identity.kind=managed}
