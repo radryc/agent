@@ -107,6 +107,8 @@ services:
       AGENT_OIDC_SCOPE: ${AGENT_OIDC_SCOPE:-openid email profile offline_access}
       AGENT_OIDC_TOKEN: ${AGENT_OIDC_TOKEN:-}
       AGENT_OIDC_PUBLIC_BASE_URL: ${AGENT_OIDC_PUBLIC_BASE_URL:-}
+      AGENT_ADMIN_GROUPS: ${AGENT_ADMIN_GROUPS:-}
+      AGENT_SESSION_SECRET: ${AGENT_SESSION_SECRET:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:14317}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-agent.agent.lagent-backend}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-guardian.partition=agent,guardian.intent=agent,guardian.asset=lagent-backend,guardian.asset.type=Compute,guardian.identity.kind=managed}

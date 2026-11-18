@@ -7,6 +7,7 @@ import secrets
 from fastapi import HTTPException, Request, WebSocket, status
 
 from app.auth.oidc import oidc
+from app.auth.sso_cookie import verify_session_marker
 from app.config import get_runtime, settings
 
 
@@ -113,7 +114,11 @@ async def require_ws_auth(websocket: WebSocket) -> bool:
         return True
     if _matches_api_token(_extract_bearer_token(websocket.headers.get("authorization"))):
         return True
-    if websocket.cookies.get("lagent_sso") == "1" and await _has_valid_oidc_session():
+    cookie_value = websocket.cookies.get("lagent_sso")
+    if (
+        verify_session_marker(cookie_value, oidc.session_marker())
+        and await _has_valid_oidc_session()
+    ):
         return True
     await websocket.close(code=1008, reason="Unauthorized")
     return False

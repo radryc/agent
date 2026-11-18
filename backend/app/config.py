@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     # Comma-separated OIDC groups/roles allowed to mutate security settings
     # through the API. Empty means only the API token may do so.
     agent_admin_groups: str = ""
+    # HMAC key for the signed lagent_sso cookie. Falls back to the API token,
+    # then to a process-local random value.
+    agent_session_secret: str = ""
     agent_terminal_enabled: bool = False
 
     # OIDC / SSO for Doctor, Guardian, and MonoFS calls.

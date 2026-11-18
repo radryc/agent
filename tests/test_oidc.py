@@ -1,9 +1,14 @@
+import base64
 import json
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
@@ -31,6 +36,42 @@ def fake_client(*responses: FakeResponse):
     return client
 
 
+TEST_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _test_jwk(kid: str = "test-key") -> dict:
+    numbers = TEST_PRIVATE_KEY.public_key().public_numbers()
+
+    def _int_bytes(value: int) -> bytes:
+        length = max(1, (value.bit_length() + 7) // 8)
+        return value.to_bytes(length, "big")
+
+    return {
+        "kty": "RSA",
+        "kid": kid,
+        "use": "sig",
+        "alg": "RS256",
+        "n": _b64url(_int_bytes(numbers.n)),
+        "e": _b64url(_int_bytes(numbers.e)),
+    }
+
+
+def signed_id_token(claims: dict, kid: str = "test-key") -> str:
+    header = {"alg": "RS256", "typ": "JWT", "kid": kid}
+    signing_input = (
+        f"{_b64url(json.dumps(header).encode())}."
+        f"{_b64url(json.dumps(claims).encode())}"
+    )
+    signature = TEST_PRIVATE_KEY.sign(
+        signing_input.encode(), padding.PKCS1v15(), hashes.SHA256()
+    )
+    return f"{signing_input}.{_b64url(signature)}"
+
+
 class OIDCProviderTest(unittest.IsolatedAsyncioTestCase):
     KEYS = (
         "agent_oidc_issuer",
@@ -48,6 +89,7 @@ class OIDCProviderTest(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         oidc.logout()
+        oidc._jwks_cache.clear()
         for key in self.KEYS:
             config._runtime_overrides.pop(key, None)
         self.addCleanup(oidc.logout)
@@ -181,6 +223,7 @@ class OIDCProviderTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_browser_login_stores_user_token(self):
         self._set(
+            agent_oidc_issuer="http://idp",
             agent_oidc_authorization_url="http://idp/authorize",
             agent_oidc_token_url="http://idp/token",
             agent_oidc_client_id="agent",
@@ -188,17 +231,31 @@ class OIDCProviderTest(unittest.IsolatedAsyncioTestCase):
             agent_oidc_scope="openid email profile",
         )
         url = await oidc.begin_login("http://localhost:9191/api/auth/callback", "/chat")
-        state = parse_qs(urlsplit(url).query)["state"][0]
+        query = parse_qs(urlsplit(url).query)
+        state = query["state"][0]
+        id_token = signed_id_token(
+            {
+                "iss": "http://idp",
+                "aud": "agent",
+                "exp": int(time.time()) + 300,
+                "nonce": query["nonce"][0],
+                "sub": "alice@example.com",
+            }
+        )
         client = fake_client(
             FakeResponse(
                 payload={
                     "access_token": "user-token",
                     "expires_in": 3600,
                     "refresh_token": "refresh-token",
+                    "id_token": id_token,
                 }
             )
         )
-        with patch("app.auth.oidc.httpx.AsyncClient", return_value=client):
+        with patch(
+            "app.auth.oidc.oidc._fetch_jwks",
+            AsyncMock(return_value=[_test_jwk()]),
+        ), patch("app.auth.oidc.httpx.AsyncClient", return_value=client):
             result = await oidc.complete_login("auth-code", state)
 
         self.assertEqual(result["status"], "authorized")
@@ -242,6 +299,42 @@ class OIDCProviderTest(unittest.IsolatedAsyncioTestCase):
             polled = await oidc.poll_device_flow()
             self.assertEqual(polled["status"], "authorization_pending")
             self.assertFalse(await oidc.get_token())
+
+    async def test_fetch_jwks_follows_discovery_and_caches(self):
+        self._set(agent_oidc_issuer="https://idp.example.com/application/o/lagent/")
+        client = fake_client()
+        client.get = AsyncMock(
+            side_effect=[
+                FakeResponse(payload={"jwks_uri": "https://idp.example.com/jwks"}),
+                FakeResponse(payload={"keys": [_test_jwk()]}),
+            ]
+        )
+        with patch("app.auth.oidc.httpx.AsyncClient", return_value=client):
+            keys = await oidc._fetch_jwks()
+            cached = await oidc._fetch_jwks()
+
+        self.assertEqual(keys, [_test_jwk()])
+        self.assertEqual(cached, keys)
+        self.assertEqual(client.get.await_count, 2)
+        discovery_url = client.get.await_args_list[0].args[0]
+        self.assertEqual(
+            discovery_url,
+            "https://idp.example.com/application/o/lagent/.well-known/openid-configuration",
+        )
+        self.assertEqual(client.get.await_args_list[1].args[0], "https://idp.example.com/jwks")
+
+    async def test_fetch_jwks_rejects_empty_key_set(self):
+        self._set(agent_oidc_issuer="https://idp.example.com")
+        client = fake_client()
+        client.get = AsyncMock(
+            side_effect=[
+                FakeResponse(payload={"jwks_uri": "https://idp.example.com/jwks"}),
+                FakeResponse(payload={"keys": []}),
+            ]
+        )
+        with patch("app.auth.oidc.httpx.AsyncClient", return_value=client):
+            with self.assertRaises(OIDCError):
+                await oidc._fetch_jwks()
 
     async def test_doctor_request_attaches_bearer_token(self):
         self._set(agent_oidc_token="static-token")
