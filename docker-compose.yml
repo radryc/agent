@@ -67,10 +67,11 @@ services:
       LLM_GRAMMAR_ENABLED: ${LLM_GRAMMAR_ENABLED:-true}
       LLM_TOOL_GRAMMAR: ${LLM_TOOL_GRAMMAR:-}
       LLM_REQUEST_EXTRA: ${LLM_REQUEST_EXTRA:-}
-      LLM_HYBRID_ENABLED: ${LLM_HYBRID_ENABLED:-true}
+      LLM_HYBRID_ENABLED: ${LLM_HYBRID_ENABLED:-false}
       LLM_HYBRID_AFTER_ROUNDS: ${LLM_HYBRID_AFTER_ROUNDS:-3}
       LLM_MAX_TOOL_ROUNDS: ${LLM_MAX_TOOL_ROUNDS:-5}
-      LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-https://api.deepseek.com}
+      # External providers are opt-in; empty keeps all LLM traffic in-cluster.
+      AGENT_LLM_FALLBACK_BASE_URL: ${AGENT_LLM_FALLBACK_BASE_URL:-}
       LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-deepseek-chat}
       LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
       LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-}
@@ -84,7 +85,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # Steve (coding persona) engine: "" = auto (OpenCode -> DeepSeek -> local)
       STEVE_ENGINE: ${STEVE_ENGINE:-}
-      STEVE_LLM_BASE_URL: ${STEVE_LLM_BASE_URL:-https://api.deepseek.com}
+      AGENT_STEVE_LLM_BASE_URL: ${AGENT_STEVE_LLM_BASE_URL:-}
       STEVE_LLM_MODEL: ${STEVE_LLM_MODEL:-deepseek-chat}
       STEVE_LLM_API_KEY: ${STEVE_LLM_API_KEY:-}
       AUTO_SWITCH_ENABLED: ${AUTO_SWITCH_ENABLED:-true}

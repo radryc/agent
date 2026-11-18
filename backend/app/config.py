@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -62,11 +63,16 @@ class Settings(BaseSettings):
     llm_request_extra: str = ""
     # Hybrid routing: start on the local model, escalate to a hosted
     # OpenAI-compatible profile when the tool loop stalls, a tool call cannot
-    # be parsed, or the turn exceeds N tool rounds.
-    llm_hybrid_enabled: bool = True
+    # be parsed, or the turn exceeds N tool rounds. Off by default so source
+    # code and telemetry never leave the cluster unless explicitly opted in.
+    llm_hybrid_enabled: bool = False
     llm_hybrid_after_rounds: int = 3
     llm_max_tool_rounds: int = 5
-    llm_fallback_base_url: str = "https://api.deepseek.com"
+    # External fallback is opt-in: only AGENT_LLM_FALLBACK_BASE_URL enables it.
+    llm_fallback_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENT_LLM_FALLBACK_BASE_URL"),
+    )
     llm_fallback_model: str = "deepseek-chat"
     llm_fallback_api_key: str = ""
     # Optional named provider (from LLM_PROVIDERS_JSON) to use as the fallback.
@@ -81,7 +87,11 @@ class Settings(BaseSettings):
     # Steve persona (software engineering agent). Engine auto-detect order is
     # OpenCode -> DeepSeek -> local Gemma unless STEVE_ENGINE forces one.
     steve_engine: str = ""  # "", "auto", "opencode", "deepseek", "local"
-    steve_llm_base_url: str = "https://api.deepseek.com"
+    # External Steve engine is opt-in: only AGENT_STEVE_LLM_BASE_URL enables it.
+    steve_llm_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENT_STEVE_LLM_BASE_URL"),
+    )
     steve_llm_model: str = "deepseek-chat"
     steve_llm_api_key: str = ""
     steve_system_prompt: str = ""
@@ -197,7 +207,29 @@ class Settings(BaseSettings):
     nightwatch_escalation_confidence: float = 0.5
     nightwatch_escalation_after_minutes: int = 20
 
-    model_config = {"env_prefix": "", "case_sensitive": False}
+    model_config = {
+        "env_prefix": "",
+        "case_sensitive": False,
+        "populate_by_name": True,
+    }
+
+    @model_validator(mode="after")
+    def _require_explicit_external_llm_opt_in(self):
+        """Ignore legacy LLM_*_BASE_URL values for external providers.
+
+        Pydantic-settings also matches a field's own name, so LLM_FALLBACK_BASE_URL
+        and STEVE_LLM_BASE_URL would otherwise silently re-enable egress. Only
+        the AGENT_-prefixed variables may turn an external provider on.
+        """
+        guarded = (
+            ("llm_fallback_base_url", "AGENT_LLM_FALLBACK_BASE_URL", "LLM_FALLBACK_BASE_URL"),
+            ("steve_llm_base_url", "AGENT_STEVE_LLM_BASE_URL", "STEVE_LLM_BASE_URL"),
+        )
+        for field_name, opt_in_env, legacy_env in guarded:
+            value = getattr(self, field_name)
+            if not os.getenv(opt_in_env) and value and value == os.getenv(legacy_env):
+                setattr(self, field_name, "")
+        return self
 
 
 settings = Settings()

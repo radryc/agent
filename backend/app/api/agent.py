@@ -80,7 +80,7 @@ async def agent_models():
         },
         "profiles": available_profiles(),
         "hybrid": {
-            "enabled": runtime_bool("llm_hybrid_enabled", default=True),
+            "enabled": runtime_bool("llm_hybrid_enabled", default=False),
             "fallback_ready": any(
                 p["id"] == "fallback" and p["available"] for p in available_profiles()
             ),

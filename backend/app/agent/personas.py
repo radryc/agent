@@ -257,10 +257,17 @@ def _local_engine() -> EngineStatus:
 
 
 def _deepseek_engine() -> EngineStatus:
-    base_url = str(get_runtime("steve_llm_base_url") or "https://api.deepseek.com").strip()
-    model = str(get_runtime("steve_llm_model") or "deepseek-chat").strip()
+    base_url = str(get_runtime("steve_llm_base_url") or settings.steve_llm_base_url).strip()
+    model = str(get_runtime("steve_llm_model") or settings.steve_llm_model).strip()
     key = str(get_runtime("steve_llm_api_key") or "").strip()
     label = f"External API ({model})"
+    if not base_url:
+        return EngineStatus(
+            "deepseek",
+            label,
+            False,
+            "AGENT_STEVE_LLM_BASE_URL is not configured",
+        )
     if not key:
         return EngineStatus("deepseek", label, False, f"no API key configured for {base_url}")
     return EngineStatus("deepseek", label, True, f"OpenAI-compatible API at {base_url}")

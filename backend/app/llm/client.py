@@ -426,7 +426,7 @@ async def list_models(profile: str = "local") -> list[dict] | None:
 
 
 def hybrid_enabled() -> bool:
-    return runtime_bool("llm_hybrid_enabled", default=True)
+    return runtime_bool("llm_hybrid_enabled", default=False)
 
 
 def fallback_ready() -> bool:
