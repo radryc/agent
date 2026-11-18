@@ -6,7 +6,7 @@ import json
 import logging
 import signal
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from app.agent.loop import ensure_session
 from app.agent.opencode import run_opencode
@@ -21,7 +21,7 @@ from app.agent.personas import (
 from app.agent.router import resolve_persona, strip_mention
 from app.agent import session as session_mgr
 from app.agent.workspace import mount_active, mount_root
-from app.auth.api_auth import require_ws_auth
+from app.auth.api_auth import require_api_auth, require_ws_auth
 from app.config import settings
 from app.terminal.exec import execute_command, get_terminal_manager
 from app.models.schemas import ChatRequest
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/api/chat")
+@router.post("/api/chat", dependencies=[Depends(require_api_auth)])
 async def chat(req: ChatRequest):
     session_id = await ensure_session(req.session_id)
     result = await run_turn(req.message, session_id)

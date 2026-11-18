@@ -19,8 +19,10 @@ import app.config as config  # noqa: E402
 from app.agent import sre_flow  # noqa: E402
 from app.agent.guardrails import redact_sensitive_text  # noqa: E402
 from app.agent.tools import get_skill  # noqa: E402
+from app.api import agent as agent_api  # noqa: E402
 from app.api import chat as chat_api  # noqa: E402
 from app.api import guardian as guardian_api  # noqa: E402
+from app.api import media as media_api  # noqa: E402
 from app.api import nightwatch as nightwatch_api  # noqa: E402
 from app.api import proposal as proposal_api  # noqa: E402
 from app.api import sessions as sessions_api  # noqa: E402
@@ -426,6 +428,8 @@ class ApiAndWebSocketAuthTest(unittest.TestCase):
         app.include_router(nightwatch_api.router)
         app.include_router(proposal_api.router)
         app.include_router(chat_api.router)
+        app.include_router(agent_api.router)
+        app.include_router(media_api.router)
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -459,6 +463,10 @@ class ApiAndWebSocketAuthTest(unittest.TestCase):
             ("GET", "/api/nightwatch/incidents/inc-1"),
             ("GET", "/api/nightwatch/activity"),
             ("POST", "/api/agent/proposal"),
+            ("POST", "/api/chat"),
+            ("GET", "/api/agent/status"),
+            ("GET", "/api/agent/models"),
+            ("GET", "/api/media/generated/example.txt"),
         ]
         for method, path in endpoints:
             resp = self.client.request(method, path)
@@ -509,6 +517,47 @@ class ApiAndWebSocketAuthTest(unittest.TestCase):
             subject="alice@example.com",
         )
         self.assertEqual(self.client.get("/api/settings").status_code, 200)
+
+    def test_oidc_non_admin_cannot_mutate_settings(self):
+        oidc._user_state = TokenState(
+            access_token="user-token",
+            expires_at=time.time() + 300,
+            source="authorization_code",
+            subject="alice@example.com",
+        )
+        self.assertEqual(self.client.get("/api/settings").status_code, 200)
+        resp = self.client.put("/api/settings", json={"llm_model": "attacker-model"})
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("Administrator", resp.json()["detail"])
+
+    def test_oidc_admin_group_can_mutate_settings(self):
+        config._runtime_overrides["agent_admin_groups"] = "lagent-admins"
+        self.addCleanup(config._runtime_overrides.pop, "agent_admin_groups", None)
+        token = _make_jwt(
+            {"sub": "alice@example.com", "groups": ["lagent-admins"]},
+            header={"alg": "none"},
+        )
+        oidc._user_state = TokenState(
+            access_token=token,
+            expires_at=time.time() + 300,
+            source="authorization_code",
+            subject="alice@example.com",
+        )
+        with patch.object(settings_api, "save_runtime_settings") as save:
+            resp = self.client.put("/api/settings", json={"llm_model": "approved-model"})
+        self.assertEqual(resp.status_code, 200)
+        save.assert_called_once_with({"llm_model": "approved-model"})
+
+    def test_api_token_can_mutate_settings(self):
+        headers = {"Authorization": "Bearer test-secret-token"}
+        with patch.object(settings_api, "save_runtime_settings") as save:
+            resp = self.client.put(
+                "/api/settings",
+                json={"llm_model": "operator-model"},
+                headers=headers,
+            )
+        self.assertEqual(resp.status_code, 200)
+        save.assert_called_once_with({"llm_model": "operator-model"})
 
     def test_ws_chat_rejects_unauthenticated_with_1008(self):
         with self.assertRaises(WebSocketDisconnect) as ctx:

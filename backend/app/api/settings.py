@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from app.agent.personas import get_persona
 from app.agent.workspace import workspace_snapshot
-from app.auth.api_auth import require_api_auth
+from app.auth.api_auth import require_admin_auth, require_api_auth
 from app.config import get_all_runtime_settings, get_runtime, save_runtime_settings
 
 router = APIRouter(tags=["settings"], dependencies=[Depends(require_api_auth)])
@@ -124,7 +124,7 @@ async def get_settings():
     return data
 
 
-@router.put("/api/settings")
+@router.put("/api/settings", dependencies=[Depends(require_admin_auth)])
 async def put_settings(payload: SettingsPayload):
     overrides = {k: v for k, v in payload.model_dump().items() if v is not None}
     for key in (

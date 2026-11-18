@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.agent.opencode import is_opencode_available, list_opencode_models, list_opencode_providers
 from app.agent.personas import list_personas, resolve_engine
@@ -10,9 +10,10 @@ from app.agent.workspace import workspace_snapshot
 from app.llm.client import available_profiles, list_models as list_llm_models
 from app.llm.presets import LLM_MODEL_PRESETS
 from app.config import get_runtime, runtime_bool
+from app.auth.api_auth import require_api_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_auth)])
 
 
 @router.get("/api/agent/status")

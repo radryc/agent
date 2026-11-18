@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-router = APIRouter(tags=["media"])
+from app.auth.api_auth import require_api_auth
+
+router = APIRouter(tags=["media"], dependencies=[Depends(require_api_auth)])
 GENERATED_DIR = Path("/data/generated").resolve()
 
 

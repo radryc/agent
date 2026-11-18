@@ -124,6 +124,9 @@ class Settings(BaseSettings):
     # API / WebSocket authentication and terminal execution controls
     agent_auth_required: bool = True
     agent_api_token: str = ""
+    # Comma-separated OIDC groups/roles allowed to mutate security settings
+    # through the API. Empty means only the API token may do so.
+    agent_admin_groups: str = ""
     agent_terminal_enabled: bool = False
 
     # OIDC / SSO for Doctor, Guardian, and MonoFS calls.
