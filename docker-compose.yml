@@ -114,7 +114,8 @@ services:
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-agent.agent.lagent-backend}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-guardian.partition=agent,guardian.intent=agent,guardian.asset=lagent-backend,guardian.asset.type=Compute,guardian.identity.kind=managed}
       OTEL_ENABLED: ${OTEL_ENABLED:-true}
-      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      # OTLP TLS is inferred from the endpoint scheme (https -> secure). Set
+      # OTEL_EXPORTER_OTLP_INSECURE explicitly in a compose override if needed.
       OTEL_METRIC_EXPORT_INTERVAL_MS: ${OTEL_METRIC_EXPORT_INTERVAL_MS:-15000}
       AWS_EC2_METADATA_DISABLED: "true"
       AWS_REGION: ${AWS_REGION:-us-east-1}

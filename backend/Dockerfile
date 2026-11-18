@@ -43,7 +43,10 @@ ENV PYTHONUNBUFFERED=1
 COPY --from=monofs-client-stage /usr/local/bin/bazelisk /usr/local/bin/bazelisk
 RUN ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && ln -s /root/.local/bin/uv /usr/local/bin/uv
+# Pin the uv installer version; never pipe an unversioned remote script.
+ARG UV_VERSION=0.7.13
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
+    && ln -s /root/.local/bin/uv /usr/local/bin/uv
 
 COPY requirements.txt .
 RUN uv pip install --system --no-cache --break-system-packages -r requirements.txt

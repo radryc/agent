@@ -33,6 +33,7 @@ from app.api.auth import router as auth_router  # noqa: E402
 from app.auth.oidc import OIDCError, TokenState, oidc  # noqa: E402
 from app.auth.sso_cookie import sign_session_marker  # noqa: E402
 from app.llm import client as llm_client  # noqa: E402
+from app.telemetry.otel import resolve_otlp_insecure  # noqa: E402
 
 if importlib.util.find_spec("prometheus_client") is None:
     from starlette.middleware.base import BaseHTTPMiddleware
@@ -774,6 +775,37 @@ class DockerfileHardeningTest(unittest.TestCase):
         dockerfile = (REPO_ROOT / "backend" / "Dockerfile").read_text()
         self.assertNotIn("NOPASSWD:ALL", dockerfile)
         self.assertNotIn("/etc/sudoers.d/developer", dockerfile)
+
+    def test_uv_installer_is_pinned(self):
+        dockerfile = (REPO_ROOT / "backend" / "Dockerfile").read_text()
+        self.assertNotIn("https://astral.sh/uv/install.sh", dockerfile)
+        self.assertIn("https://astral.sh/uv/${UV_VERSION}/install.sh", dockerfile)
+        self.assertIn("ARG UV_VERSION=", dockerfile)
+
+    def test_llm_container_runs_as_non_root(self):
+        dockerfile = (REPO_ROOT / "llm" / "Dockerfile").read_text()
+        self.assertIn("USER llama", dockerfile)
+        self.assertIn("useradd --uid 10001", dockerfile)
+        self.assertNotIn("USER root", dockerfile)
+
+    def test_frontend_container_runs_as_non_root(self):
+        dockerfile = (REPO_ROOT / "frontend" / "Dockerfile").read_text()
+        self.assertIn("nginx-unprivileged", dockerfile)
+        self.assertIn("USER 101", dockerfile)
+
+
+class OtlpTlsDefaultTest(unittest.TestCase):
+    def test_insecure_defaults_from_endpoint_scheme(self):
+        self.assertTrue(resolve_otlp_insecure("http://collector:4317", None))
+        self.assertFalse(resolve_otlp_insecure("https://collector:4317", None))
+        self.assertFalse(resolve_otlp_insecure("HTTPS://collector:4317", None))
+
+    def test_explicit_override_wins(self):
+        self.assertFalse(resolve_otlp_insecure("http://collector:4317", False))
+        self.assertTrue(resolve_otlp_insecure("https://collector:4317", True))
+
+    def test_settings_default_defers_to_scheme(self):
+        self.assertIsNone(config.Settings().otel_exporter_otlp_insecure)
 
 
 if __name__ == "__main__":

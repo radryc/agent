@@ -171,7 +171,8 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "agent.agent.lagent-backend"
     otel_enabled: bool = False
-    otel_exporter_otlp_insecure: bool = True
+    # None means derive from the endpoint scheme (https -> secure).
+    otel_exporter_otlp_insecure: bool | None = None
     otel_metric_export_interval_ms: int = 15000
 
     guardian_url: str = "http://host.docker.internal:8090"
