@@ -10,9 +10,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.api import proposal  # noqa: E402
+from app.config import settings  # noqa: E402
 
 
 class ProposalApiTest(unittest.TestCase):
+    def setUp(self):
+        self._original_auth = settings.agent_auth_required
+        settings.agent_auth_required = False
+
+    def tearDown(self):
+        settings.agent_auth_required = self._original_auth
+
     def test_create_proposal_returns_steve_session(self):
         app = FastAPI()
         app.include_router(proposal.router)

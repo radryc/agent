@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.agent.personas import get_persona
 from app.agent.workspace import workspace_snapshot
+from app.auth.api_auth import require_api_auth
 from app.config import get_all_runtime_settings, get_runtime, save_runtime_settings
 
-router = APIRouter(tags=["settings"])
+router = APIRouter(tags=["settings"], dependencies=[Depends(require_api_auth)])
 
 
 class SettingsPayload(BaseModel):

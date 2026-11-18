@@ -5,16 +5,17 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agent import session as session_mgr
 from app.agent.personas import engine_profile, resolve_engine
 from app.agent.sre_flow import run_turn
+from app.auth.api_auth import require_api_auth
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["proposal"])
+router = APIRouter(tags=["proposal"], dependencies=[Depends(require_api_auth)])
 
 _proposal_tasks: set[asyncio.Task] = set()
 

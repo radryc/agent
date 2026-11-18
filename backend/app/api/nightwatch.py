@@ -4,13 +4,14 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from app.auth.api_auth import require_api_auth
 from app.auth.oidc import oidc
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["nightwatch"])
+router = APIRouter(tags=["nightwatch"], dependencies=[Depends(require_api_auth)])
 
 _TIMEOUT = httpx.Timeout(10.0)
 

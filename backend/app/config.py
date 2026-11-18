@@ -121,6 +121,11 @@ class Settings(BaseSettings):
     gemini_image_aspect_ratio: str = "16:9"
     gemini_image_count: int = 1
 
+    # API / WebSocket authentication and terminal execution controls
+    agent_auth_required: bool = True
+    agent_api_token: str = ""
+    agent_terminal_enabled: bool = False
+
     # OIDC / SSO for Doctor, Guardian, and MonoFS calls.
     # Client credentials are the machine-to-machine path; the device flow is
     # the interactive SSO path (Settings -> SSO -> Sign in).

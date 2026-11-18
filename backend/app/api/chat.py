@@ -21,6 +21,8 @@ from app.agent.personas import (
 from app.agent.router import resolve_persona, strip_mention
 from app.agent import session as session_mgr
 from app.agent.workspace import mount_active, mount_root
+from app.auth.api_auth import require_ws_auth
+from app.config import settings
 from app.terminal.exec import execute_command, get_terminal_manager
 from app.models.schemas import ChatRequest
 
@@ -40,6 +42,8 @@ async def chat(req: ChatRequest):
 
 @router.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket):
+    if not await require_ws_auth(websocket):
+        return
     await websocket.accept()
     logger.info("WebSocket client connected")
     terminal_manager = get_terminal_manager()
@@ -80,6 +84,9 @@ async def ws_chat(websocket: WebSocket):
                 continue
 
             if msg_type == "terminal_start":
+                if not settings.agent_terminal_enabled:
+                    await safe_send({"type": "terminal_error", "data": "Terminal is disabled"})
+                    continue
                 requested_session_id = await ensure_session(data.get("session_id"))
                 await safe_send({"type": "session", "session_id": requested_session_id})
 
@@ -127,6 +134,9 @@ async def ws_chat(websocket: WebSocket):
                 continue
 
             if msg_type == "exec":
+                if not settings.agent_terminal_enabled:
+                    await safe_send({"type": "error", "data": "Terminal execution is disabled"})
+                    continue
                 user_message = data.get("data", "")
                 session_id = data.get("session_id")
                 if not user_message:

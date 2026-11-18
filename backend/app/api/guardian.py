@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 
-from app.config import settings
+from app.auth.api_auth import require_api_auth
 from app.auth.oidc import oidc
+from app.config import settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["guardian"])
+router = APIRouter(tags=["guardian"], dependencies=[Depends(require_api_auth)])
 
 _TIMEOUT = httpx.Timeout(10.0)
 

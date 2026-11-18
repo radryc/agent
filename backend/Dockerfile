@@ -64,9 +64,6 @@ RUN mkdir -p /etc && \
     ln -sf /proc/self/mounts /etc/mtab
 
 RUN useradd -m -s /bin/bash developer && \
-    usermod -aG sudo developer && \
-    echo "developer ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/developer && \
-    chmod 0440 /etc/sudoers.d/developer && \
     chown -R developer:developer /app /data /workspace
 
 USER developer

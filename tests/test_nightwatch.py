@@ -435,13 +435,16 @@ class WorkerTest(unittest.IsolatedAsyncioTestCase):
 class ProxyTest(unittest.TestCase):
     def setUp(self):
         self._original = settings.nightwatch_url
+        self._original_auth = settings.agent_auth_required
         settings.nightwatch_url = ""
+        settings.agent_auth_required = False
         app = FastAPI()
         app.include_router(nightwatch_proxy_router)
         self.client = TestClient(app)
 
     def tearDown(self):
         settings.nightwatch_url = self._original
+        settings.agent_auth_required = self._original_auth
 
     def test_overview_returns_safe_empty_state(self):
         response = self.client.get("/api/nightwatch/overview")
