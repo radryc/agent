@@ -75,4 +75,6 @@ EXPOSE 8090
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]
+# app.server applies STRATA_TLS_* to uvicorn's ssl_* options. With TLS off
+# (the default) this is equivalent to the previous uvicorn CLI command.
+CMD ["python", "-m", "app.server", "--app", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]

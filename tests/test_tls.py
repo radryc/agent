@@ -277,5 +277,59 @@ class URLNormalizationTest(unittest.TestCase):
         self.assertEqual(cfg.llm_base_url, "https://llm.local:8080")
 
 
+class ServerLauncherTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.cert = self.dir / "tls.crt"
+        self.key = self.dir / "tls.key"
+        self.ca = self.dir / "ca.crt"
+        for path in (self.cert, self.key, self.ca):
+            path.write_text("test\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_launcher_passes_tls_kwargs_without_starting_a_server(self):
+        from app import server
+
+        env = {
+            "STRATA_TLS_MODE": "required",
+            "STRATA_TLS_CERT_FILE": str(self.cert),
+            "STRATA_TLS_KEY_FILE": str(self.key),
+            "STRATA_TLS_CA_FILE": str(self.ca),
+            "STRATA_TLS_REQUIRE_CLIENT_CERT": "true",
+        }
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            server.uvicorn, "run"
+        ) as run:
+            rc = server.main(
+                ["--app", "app.main:app", "--host", "127.0.0.1", "--port", "9999"]
+            )
+        self.assertEqual(rc, 0)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["ssl_certfile"], str(self.cert))
+        self.assertEqual(kwargs["ssl_keyfile"], str(self.key))
+        self.assertEqual(kwargs["ssl_ca_certs"], str(self.ca))
+        self.assertEqual(kwargs["ssl_cert_reqs"], ssl.CERT_REQUIRED)
+
+    def test_launcher_fails_closed_on_invalid_config(self):
+        from app import server
+
+        with patch.dict(
+            os.environ,
+            {
+                "STRATA_TLS_MODE": "required",
+                "STRATA_TLS_CERT_FILE": str(self.dir / "missing.crt"),
+                "STRATA_TLS_KEY_FILE": str(self.dir / "missing.key"),
+                "STRATA_TLS_CA_FILE": str(self.dir / "missing-ca.crt"),
+            },
+            clear=False,
+        ), patch.object(server.uvicorn, "run") as run:
+            rc = server.main([])
+        self.assertEqual(rc, 2)
+        run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

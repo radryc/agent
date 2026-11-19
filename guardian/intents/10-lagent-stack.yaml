@@ -54,7 +54,7 @@ spec:
         command:
           - sh
           - -c
-          - mkdir -p /data && sudo touch /data/lagent.db && sudo chown developer:developer /data /data/lagent.db && sudo chmod 775 /data && sudo chmod 664 /data/lagent.db && exec uvicorn app.main:app --host 0.0.0.0 --port 8090
+          - mkdir -p /data && sudo touch /data/lagent.db && sudo chown developer:developer /data /data/lagent.db && sudo chmod 775 /data && sudo chmod 664 /data/lagent.db && exec python -m app.server --app app.main:app --host 0.0.0.0 --port 8090
         image: lagent-backend:latest
         ports:
           - name: http
@@ -96,7 +96,7 @@ spec:
         command:
           - sh
           - -c
-          - exec uvicorn app.nightwatch.main:app --host 0.0.0.0 --port 8091
+          - exec python -m app.server --app app.nightwatch.main:app --host 0.0.0.0 --port 8091
         image: lagent-backend:latest
         ports:
           - name: http
