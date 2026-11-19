@@ -15,10 +15,10 @@ Environment contract::
     STRATA_TLS_REQUIRE_CLIENT_CERT=true|false
 
 ``off`` is the default and preserves the previous plaintext behavior.  In
-``required`` mode the certificate, key, and CA files must exist and every
-outbound service URL is normalized to HTTPS.  ``optional`` serves TLS when the
-certificate/key pair is available and otherwise keeps the plaintext listener,
-which makes migration possible without a flag day.
+``required`` mode the certificate, key, and CA files must exist and scheme-less
+outbound service URLs are normalized to HTTPS.  ``optional`` serves TLS when
+the certificate/key pair is available and otherwise keeps the plaintext
+listener, which makes migration possible without a flag day.
 
 Unlike ``tlsx``'s Go server default, client certificates are *not* required
 unless ``STRATA_TLS_REQUIRE_CLIENT_CERT=true``.  The agent's browser-facing
