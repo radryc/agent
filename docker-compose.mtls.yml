@@ -1,0 +1,49 @@
+# Local TLS/mTLS override for the agent stack.
+#
+# Generate the PKI first (from the tlsx repository):
+#   tlsx gen --dir .tls --reuse-ca
+#   tlsx verify --dir .tls
+#
+# Then start the stack:
+#   docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d
+#
+# This keeps the browser-facing nginx listener on plain HTTP :3000 and enables
+# TLS on the nginx -> backend hop, the backend listener, and the backend's
+# outbound service calls. Set STRATA_TLS_REQUIRE_CLIENT_CERT=true for strict
+# mTLS; see README.md for the client-certificate requirements.
+#
+# OTLP is intentionally not modified here. If your collector uses TLS, set
+# OTEL_EXPORTER_OTLP_INSECURE=false and point OTEL_EXPORTER_OTLP_ENDPOINT at an
+# https:// endpoint. Trust for a private collector CA is an operator concern
+# (OTEL_EXPORTER_OTLP_CERTIFICATE / SSL_CERT_FILE), not part of STRATA_TLS_*.
+services:
+  backend:
+    volumes:
+      - ./.tls/agent:/var/run/secrets/strata-tls:ro
+    environment:
+      STRATA_TLS_MODE: required
+      STRATA_TLS_CERT_FILE: /var/run/secrets/strata-tls/tls.crt
+      STRATA_TLS_KEY_FILE: /var/run/secrets/strata-tls/tls.key
+      STRATA_TLS_CA_FILE: /var/run/secrets/strata-tls/ca.crt
+      STRATA_TLS_REQUIRE_CLIENT_CERT: ${STRATA_TLS_REQUIRE_CLIENT_CERT:-false}
+    healthcheck:
+      # curl sends the client certificate only if the server requests one, so
+      # this probe works with and without STRATA_TLS_REQUIRE_CLIENT_CERT.
+      test:
+        - CMD-SHELL
+        - curl -fsS --cacert /var/run/secrets/strata-tls/ca.crt --cert /var/run/secrets/strata-tls/tls.crt --key /var/run/secrets/strata-tls/tls.key https://localhost:8090/api/health
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    volumes:
+      # The proxy only needs the CA to verify the backend certificate.
+      - ./.tls/agent/ca.crt:/var/run/secrets/strata-tls/ca.crt:ro
+      - ./frontend/nginx.mtls.conf:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      LAGENT_BACKEND_HOST: lagent-backend
+      # Must be a SAN in .tls/agent/tls.crt (tlsx includes "agent" and
+      # "localhost" by default).
+      LAGENT_TLS_SERVER_NAME: ${LAGENT_TLS_SERVER_NAME:-agent}

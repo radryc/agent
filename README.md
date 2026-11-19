@@ -86,6 +86,7 @@ Configuration is read from environment variables by `pydantic-settings`. Runtime
 | Persistence | `DATABASE_URL` | Session and message store; default SQLite at `/data/lagent.db`. |
 | SSO / OIDC | `AGENT_OIDC_ISSUER`, `AGENT_OIDC_TOKEN_URL`, `AGENT_OIDC_AUTHORIZATION_URL`, `AGENT_OIDC_DEVICE_AUTHORIZATION_URL`, `AGENT_OIDC_REDIRECT_URL`, `AGENT_OIDC_CLIENT_ID`, `AGENT_OIDC_CLIENT_SECRET`, `AGENT_OIDC_AUDIENCE`, `AGENT_OIDC_SCOPE`, `AGENT_OIDC_TOKEN`, `AGENT_OIDC_PUBLIC_BASE_URL` | Static token, browser authorization-code + PKCE, device flow, and client credentials. |
 | Platform services | `GUARDIAN_URL`, `DOCTOR_QUERY_URL`, `LB_EDGE_REGISTRY_URL` | Guardian, Doctor query, and LB Edge registry endpoints. |
+| TLS / mTLS | `STRATA_TLS_MODE`, `STRATA_TLS_CERT_FILE`, `STRATA_TLS_KEY_FILE`, `STRATA_TLS_CA_FILE`, `STRATA_TLS_SERVER_NAME`, `STRATA_TLS_REQUIRE_CLIENT_CERT` | Shared Strata contract. `off` is the default; `required` fails closed without a PKI and upgrades outbound service URLs to HTTPS. |
 | MonoFS workspace | `MONOFS_ROUTER`, `MONOFS_MOUNT`, `MONOFS_OVERLAY_DIR`, `MONOFS_OVERLAY`, `MONOFS_SEARCH_ADDR` | Empty router leaves workspace tools unavailable. `MONOFS_OVERLAY_DIR` takes precedence over `MONOFS_OVERLAY` and is shared with `monofs-client` for `session.sock`. |
 | Nightwatch | `NIGHTWATCH_URL`, `NIGHTWATCH_PROXY_TOKEN`, `NIGHTWATCH_ENABLED`, `NIGHTWATCH_MODE`, `NIGHTWATCH_POLL_INTERVAL_SECONDS`, `NIGHTWATCH_SENTINEL_URL`, `NIGHTWATCH_DB_URL`, `NIGHTWATCH_TENANT`, `NIGHTWATCH_ASSIGNMENT_LABEL`, `NIGHTWATCH_ESCALATION_CONFIDENCE`, `NIGHTWATCH_ESCALATION_AFTER_MINUTES`, `NIGHTWATCH_CORRELATION_WINDOW_MINUTES`, `NIGHTWATCH_RETENTION_DAYS`, `NIGHTWATCH_MAX_CONCURRENT_INVESTIGATIONS`, `NIGHTWATCH_RCA_QUERIES_FILE`, `NIGHTWATCH_LLM_ENABLED`, `NIGHTWATCH_LLM_PROFILE` | Shadow mode is enforced. The interactive backend only proxies Nightwatch reads. |
 | Telemetry | `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_INSECURE`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_METRIC_EXPORT_INTERVAL_MS` | OTLP gRPC traces and metrics; disabled by default in `config.py` unless `OTEL_ENABLED=true` (enabled by default in `docker-compose.yml`). |
@@ -110,6 +111,31 @@ Services and host ports:
 
 Useful Makefile targets: `up`, `down`, `logs`, `build`, `dev` (`up --build`), `status`, `restart`, `clean`, `llm-logs`, `backend-logs`, `frontend-logs`.
 
+### TLS / mTLS
+
+The backend starts through `app.server`, which maps the shared `STRATA_TLS_*` contract onto uvicorn's `ssl_certfile`, `ssl_keyfile`, `ssl_ca_certs`, and `ssl_cert_reqs` options. `off` (the default) preserves the previous plaintext behavior. `optional` serves TLS when a certificate/key pair is mounted and falls back to plaintext otherwise. `required` refuses to start unless the certificate, key, and CA files exist.
+
+Generate a local PKI with the shared `tlsx` CLI, then start the stack with the override:
+
+```bash
+# from the tlsx repository
+go run ./cmd/tlsx gen --dir .tls --reuse-ca
+go run ./cmd/tlsx verify --dir .tls
+
+# from this repository
+docker compose -f docker-compose.yml -f docker-compose.mtls.yml up -d
+```
+
+The override mounts `./.tls/agent` at `/var/run/secrets/strata-tls`, sets `STRATA_TLS_MODE=required`, switches nginx to the `frontend/nginx.mtls.conf` template so the proxy hop uses `https://lagent-backend:8090` with CA verification, and changes the backend health check to HTTPS. The browser still reaches nginx on `http://localhost:3000`; that segment stays plaintext. If port 8090 is exposed directly, use `https://localhost:8090`.
+
+**Frontend and dev proxy.** `frontend/vite.config.ts` still targets `http://localhost:8090` so plaintext development is unchanged. When the backend runs with TLS, point the `/api` and `/ws` targets at `https://localhost:8090` and set `secure: false` for the local self-signed CA (or make Node trust `ca.crt`). Do not use `secure: false` outside local development.
+
+**Strict mTLS.** `STRATA_TLS_REQUIRE_CLIENT_CERT=true` makes uvicorn request and verify client certificates. The Compose override defaults it to `false` so the bundled nginx proxy keeps working. For strict mTLS, set it to `true` and give every client a certificate signed by the CA: nginx needs `proxy_ssl_certificate`/`proxy_ssl_certificate_key` in `frontend/nginx.mtls.conf`, and the backend health check already presents `tls.crt`/`tls.key`.
+
+**Outbound calls.** In `required` mode, scheme-less and `http://` Doctor, Guardian, LB Edge (MonoFS edge), Nightwatch, OpenCode, OIDC, and LLM URLs are normalized to `https://`. When `STRATA_TLS_CA_FILE` is set, internal `httpx` clients verify with that bundle and present the service certificate for outbound mTLS. Include public roots in the bundle if a hosted LLM or external IdP is configured. `MONOFS_ROUTER` and `MONOFS_SEARCH_ADDR` are CLI addresses rather than HTTP URLs, so they are left unchanged.
+
+**OTLP is separate.** OTLP exporters do not read `STRATA_TLS_*`. For a TLS collector, use an `https://` endpoint with `OTEL_EXPORTER_OTLP_INSECURE=false`, and set `OTEL_EXPORTER_OTLP_CERTIFICATE` or `SSL_CERT_FILE` for a private CA.
+
 ### Local development
 
 Backend:
@@ -118,8 +144,10 @@ Backend:
 cd backend
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8090
+python -m app.server --app app.main:app --host 0.0.0.0 --port 8090
 ```
+
+`app.server` reads `STRATA_TLS_*`; invoking `uvicorn app.main:app ...` directly bypasses the TLS contract and is only appropriate when TLS is off.
 
 The backend expects an OpenAI-compatible model endpoint at `LLM_BASE_URL`. Guardian, Doctor, and MonoFS are optional; tools report connection or configuration errors when they are unavailable.
 
