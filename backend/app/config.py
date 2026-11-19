@@ -8,6 +8,8 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
 
+from app.security.tls import MODE_OFF, load_tls_settings, normalize_url
+
 logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = Path("/data/lagent_settings.json")
@@ -230,6 +232,36 @@ class Settings(BaseSettings):
             value = getattr(self, field_name)
             if not os.getenv(opt_in_env) and value and value == os.getenv(legacy_env):
                 setattr(self, field_name, "")
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_tls_service_urls(self):
+        """Make outbound service URLs speak HTTPS when TLS is required.
+
+        Operator-provided URLs without a scheme (for example
+        ``doctor-query:18080``) get ``https://`` in required mode, and explicit
+        ``http://`` URLs are upgraded so a required-TLS deployment cannot
+        accidentally keep plaintext egress.  ``off`` and ``optional`` preserve
+        the previous behavior.  MonoFS router/search addresses are CLI
+        endpoints, not HTTP URLs, so they are deliberately left untouched.
+        """
+        tls_cfg = load_tls_settings()
+        if tls_cfg.mode == MODE_OFF:
+            return self
+        for field_name in (
+            "llm_base_url",
+            "llm_fallback_base_url",
+            "steve_llm_base_url",
+            "guardian_url",
+            "doctor_query_url",
+            "lb_edge_registry_url",
+            "nightwatch_url",
+            "nightwatch_sentinel_url",
+            "opencode_server_url",
+        ):
+            value = getattr(self, field_name, "")
+            if value:
+                setattr(self, field_name, normalize_url(value, tls_cfg))
         return self
 
 
