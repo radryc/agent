@@ -95,7 +95,13 @@ class TLSFileValidationTest(unittest.TestCase):
         self.assertFalse(cfg.require_client_cert)
 
     def test_optional_without_mounted_pki_stays_plaintext(self):
-        cfg = tls.load_tls_settings({"STRATA_TLS_MODE": "optional"})
+        with patch.multiple(
+            tls,
+            DEFAULT_CERT_FILE=str(self.dir / "missing.crt"),
+            DEFAULT_KEY_FILE=str(self.dir / "missing.key"),
+            DEFAULT_CA_FILE=str(self.dir / "missing-ca.crt"),
+        ):
+            cfg = tls.load_tls_settings({"STRATA_TLS_MODE": "optional"})
         self.assertEqual(cfg.mode, tls.MODE_OPTIONAL)
         self.assertFalse(cfg.enabled)
         self.assertEqual(tls.uvicorn_tls_kwargs(cfg), {})
