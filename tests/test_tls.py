@@ -230,10 +230,10 @@ class URLNormalizationTest(unittest.TestCase):
             "http://guardian:8090",
         )
 
-    def test_explicit_http_is_upgraded_when_required(self):
+    def test_explicit_http_is_preserved_when_required(self):
         self.assertEqual(
             tls.normalize_url("http://guardian:8090", env={"STRATA_TLS_MODE": "required"}),
-            "https://guardian:8090",
+            "http://guardian:8090",
         )
 
     def test_explicit_http_is_untouched_when_off(self):
@@ -273,7 +273,7 @@ class URLNormalizationTest(unittest.TestCase):
             with patch.dict(os.environ, env, clear=False):
                 cfg = Settings(_env_file=None)
         self.assertEqual(cfg.guardian_url, "https://guardian.local:8090")
-        self.assertEqual(cfg.doctor_query_url, "https://doctor.local:18080")
+        self.assertEqual(cfg.doctor_query_url, "http://doctor.local:18080")
         self.assertEqual(cfg.llm_base_url, "https://llm.local:8080")
 
 

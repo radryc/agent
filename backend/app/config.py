@@ -239,10 +239,10 @@ class Settings(BaseSettings):
         """Make outbound service URLs speak HTTPS when TLS is required.
 
         Operator-provided URLs without a scheme (for example
-        ``doctor-query:18080``) get ``https://`` in required mode, and explicit
-        ``http://`` URLs are upgraded so a required-TLS deployment cannot
-        accidentally keep plaintext egress.  ``off`` and ``optional`` preserve
-        the previous behavior.  MonoFS router/search addresses are CLI
+        ``doctor-query:18080``) get ``https://`` in required mode.  Explicitly
+        configured ``http://`` URLs are left as-is because they may target a
+        local service that does not terminate TLS.  ``off`` and ``optional``
+        preserve the previous behavior.  MonoFS router/search addresses are CLI
         endpoints, not HTTP URLs, so they are deliberately left untouched.
         """
         tls_cfg = load_tls_settings()

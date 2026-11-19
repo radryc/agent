@@ -283,9 +283,11 @@ def normalize_url(
 ) -> str:
     """Normalize an outbound service URL for the current TLS mode.
 
-    ``required`` mode adds ``https://`` to scheme-less URLs and upgrades an
-    explicit ``http://`` URL.  ``off`` and ``optional`` keep the existing
-    plaintext default for scheme-less URLs and leave explicit URLs alone.
+    ``required`` mode adds ``https://`` to scheme-less URLs.  Explicitly
+    configured URLs are left untouched: ``https://`` is already secure and an
+    ``http://`` URL is an intentional operator choice (for example a local
+    model server that does not terminate TLS).  ``off`` and ``optional`` keep
+    the existing plaintext default for scheme-less URLs.
     """
     raw = str(url or "").strip()
     if not raw:
@@ -298,9 +300,6 @@ def normalize_url(
         required = parse_tls_mode(_env_value(source, "STRATA_TLS_MODE")) == MODE_REQUIRED
 
     if "://" in raw:
-        scheme, rest = raw.split("://", 1)
-        if required and scheme.strip().lower() == "http":
-            return f"https://{rest}"
         return raw
 
     return f"{'https' if required else 'http'}://{raw}"
