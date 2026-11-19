@@ -24,6 +24,7 @@ from app.config import get_runtime, runtime_bool, settings
 from app.agent import graph_validation
 from app.agent import workspace as workspace_tools
 from app.auth.oidc import oidc
+from app.security.tls import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,9 @@ async def _guardian_get(path: str) -> str:
     if raw_path.startswith("api/") and not raw_path.startswith("api/m2m/"):
         candidates = ["api/m2m/" + raw_path[len("api/"):], raw_path]
     headers = await oidc.auth_headers()
-    async with httpx.AsyncClient(timeout=GUARDIAN_TIMEOUT, headers=headers) as client:
+    async with httpx.AsyncClient(
+        timeout=GUARDIAN_TIMEOUT, headers=headers, **httpx_client_kwargs()
+    ) as client:
         last_error: Exception | None = None
         for candidate in candidates:
             url = f"{settings.guardian_url.rstrip('/')}/{candidate}"
@@ -183,7 +186,9 @@ async def _guardian_get(path: str) -> str:
 async def _guardian_post(path: str) -> str:
     url = f"{settings.guardian_url.rstrip('/')}/{path.lstrip('/')}"
     headers = await oidc.auth_headers()
-    async with httpx.AsyncClient(timeout=GUARDIAN_TIMEOUT, headers=headers) as client:
+    async with httpx.AsyncClient(
+        timeout=GUARDIAN_TIMEOUT, headers=headers, **httpx_client_kwargs()
+    ) as client:
         r = await client.post(url)
         r.raise_for_status()
         return r.text
@@ -233,7 +238,9 @@ async def _doctor_get(path: str, *, timeout: httpx.Timeout | None = None) -> str
     url = f"{DOCTOR_QUERY_URL.rstrip('/')}/{path.lstrip('/')}"
     headers = await oidc.auth_headers()
     async with httpx.AsyncClient(
-        timeout=timeout or DOCTOR_TIMEOUT, headers=headers
+        timeout=timeout or DOCTOR_TIMEOUT,
+        headers=headers,
+        **httpx_client_kwargs(),
     ) as client:
         r = await client.get(url)
         if r.is_error:
@@ -813,7 +820,9 @@ register(Skill(
 async def _tool_lb_edge_services(_args: dict) -> str:
     base = str(get_runtime("lb_edge_registry_url") or settings.lb_edge_registry_url).rstrip("/")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=5.0), **httpx_client_kwargs()
+        ) as client:
             resp = await client.get(f"{base}/services")
             resp.raise_for_status()
             return _truncate(resp.text)
@@ -2745,7 +2754,9 @@ async def _nightwatch_get(path: str, params: dict | None = None) -> str:
     if settings.nightwatch_proxy_token:
         headers["X-Nightwatch-Token"] = settings.nightwatch_proxy_token
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0), headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0), headers=headers, **httpx_client_kwargs()
+        ) as client:
             response = await client.get(
                 f"{settings.nightwatch_url.rstrip('/')}{path}", params=params or {}
             )

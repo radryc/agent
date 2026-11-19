@@ -9,6 +9,7 @@ import httpx
 
 from app.agent.guardrails import redact_sensitive_text
 from app.config import get_runtime, runtime_bool, settings
+from app.security.tls import httpx_client_kwargs, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,9 @@ def _infer_paths(base_url: str, chat_path: str = "", models_path: str = "") -> t
 
 
 def _local_config() -> dict:
-    base_url = str(get_runtime("llm_base_url") or settings.llm_base_url).strip()
+    base_url = normalize_url(
+        str(get_runtime("llm_base_url") or settings.llm_base_url).strip()
+    )
     model = str(get_runtime("llm_model") or settings.llm_model).strip() or settings.llm_model
     extra = _parse_json_object(get_runtime("llm_request_extra"), what="llm_request_extra")
     chat_path, models_path = _infer_paths(base_url)
@@ -97,9 +100,12 @@ def _fallback_config() -> dict:
     if provider:
         return _provider_config(provider)
 
-    base_url = str(
-        get_runtime("llm_fallback_base_url") or settings.llm_fallback_base_url
-    ).strip() or settings.llm_fallback_base_url
+    base_url = normalize_url(
+        str(
+            get_runtime("llm_fallback_base_url") or settings.llm_fallback_base_url
+        ).strip()
+        or settings.llm_fallback_base_url
+    )
     model = str(
         get_runtime("llm_fallback_model") or settings.llm_fallback_model
     ).strip() or settings.llm_fallback_model
@@ -131,7 +137,9 @@ def _provider_config(name: str) -> dict:
     if entry is None:
         raise ValueError(f"Unknown LLM provider profile: {name!r}")
 
-    base_url = str(entry.get("base_url") or entry.get("url") or "").strip()
+    base_url = normalize_url(
+        str(entry.get("base_url") or entry.get("url") or "").strip()
+    )
     if not base_url:
         raise ValueError(f"LLM provider profile {name!r} has no base_url")
 
@@ -165,9 +173,12 @@ def _profile_config(profile: str) -> dict:
     """
     profile = str(profile or "local").strip()
     if profile == "steve":
-        base_url = str(
-            get_runtime("steve_llm_base_url") or settings.steve_llm_base_url
-        ).strip() or settings.steve_llm_base_url
+        base_url = normalize_url(
+            str(
+                get_runtime("steve_llm_base_url") or settings.steve_llm_base_url
+            ).strip()
+            or settings.steve_llm_base_url
+        )
         chat_path, models_path = _infer_paths(base_url)
         return {
             "id": "steve",
@@ -273,6 +284,7 @@ def _get_client(profile: str = "local") -> tuple[httpx.AsyncClient, dict]:
             base_url=config["base_url"],
             headers=_auth_headers(config),
             timeout=httpx.Timeout(connect=10.0, read=180.0, write=10.0, pool=10.0),
+            **httpx_client_kwargs(),
         )
         _clients[cache_key] = client
     return client, config

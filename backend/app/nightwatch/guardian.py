@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from app.auth.oidc import oidc
+from app.security.tls import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,9 @@ class GuardianClient:
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         headers = await _auth_headers()
-        client = self._client or httpx.AsyncClient(timeout=self.timeout)
+        client = self._client or httpx.AsyncClient(
+            timeout=self.timeout, **httpx_client_kwargs()
+        )
         self._client = client
         try:
             response = await client.get(f"{self.base_url}{path}", params=params, headers=headers)

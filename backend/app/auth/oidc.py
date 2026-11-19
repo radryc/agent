@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from app.config import get_runtime
+from app.security.tls import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -336,7 +337,7 @@ class OIDCTokenProvider:
         client_id: str,
         client_secret: str,
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, **httpx_client_kwargs()) as client:
             # Most OIDC providers accept HTTP Basic client authentication.
             response = await client.post(
                 token_url, data=data, auth=(client_id, client_secret)
@@ -443,7 +444,7 @@ class OIDCTokenProvider:
                 return cached[1]
 
             discovery_url = issuer + "/.well-known/openid-configuration"
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, **httpx_client_kwargs()) as client:
                 discovery = await client.get(discovery_url)
                 if discovery.status_code >= 400:
                     raise OIDCError(
@@ -581,7 +582,7 @@ class OIDCTokenProvider:
         if audience:
             data["audience"] = audience
 
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, **httpx_client_kwargs()) as client:
             response = await client.post(device_url, data=data)
         if response.status_code >= 400:
             raise OIDCError(
@@ -647,7 +648,7 @@ class OIDCTokenProvider:
         if device.client_secret:
             data["client_secret"] = device.client_secret
 
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, **httpx_client_kwargs()) as client:
             response = await client.post(token_url, data=data)
         try:
             payload = response.json()

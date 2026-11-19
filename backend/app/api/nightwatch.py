@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from app.auth.api_auth import require_api_auth
 from app.auth.oidc import oidc
 from app.config import settings
+from app.security.tls import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["nightwatch"], dependencies=[Depends(require_api_auth)])
@@ -33,7 +34,9 @@ async def _scope_headers() -> dict[str, str]:
     if not headers:
         return {}
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT, headers=headers, **httpx_client_kwargs()
+        ) as client:
             response = await client.get(
                 f"{settings.doctor_query_url.rstrip('/')}/v1/ui/config"
             )
@@ -98,7 +101,9 @@ async def _proxy(path: str, request: Request) -> dict[str, Any]:
         headers["X-Nightwatch-Token"] = settings.nightwatch_proxy_token
     headers.update(await _scope_headers())
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT, headers=headers, **httpx_client_kwargs()
+        ) as client:
             response = await client.get(url, params=dict(request.query_params))
     except Exception as exc:
         logger.warning("Nightwatch proxy error for %s: %s", url, exc)
@@ -152,7 +157,9 @@ async def incident(incident_id: str, request: Request):
         headers["X-Nightwatch-Token"] = settings.nightwatch_proxy_token
     headers.update(await _scope_headers())
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT, headers=headers, **httpx_client_kwargs()
+        ) as client:
             response = await client.get(url)
     except Exception as exc:
         logger.warning("Nightwatch incident proxy error for %s: %s", url, exc)
