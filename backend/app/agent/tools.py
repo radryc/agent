@@ -3147,7 +3147,7 @@ register(Skill(
 # Execute tool (dispatcher)
 # ---------------------------------------------------------------------------
 
-async def execute_tool(
+async def _execute_tool_impl(
     name: str,
     args: dict | None = None,
     *,
@@ -3180,3 +3180,26 @@ async def execute_tool(
 
 # Build exports on module load
 _rebuild_exports()
+
+
+async def execute_tool(
+    name: str,
+    args: dict | None = None,
+    *,
+    allowed: set[str] | None = None,
+) -> str:
+    """Audited wrapper around the tool dispatcher."""
+    from app import audit
+
+    result = await _execute_tool_impl(name, args, allowed=allowed)
+    denied = allowed is not None and name not in allowed
+    audit.emit(
+        "tool",
+        "deny" if denied else "allow",
+        name,
+        scope="agent-tool",
+        reason="" if not denied else "not_allowlisted",
+        resource_type="tool",
+        detail="" if denied else str(result)[:512],
+    )
+    return result
