@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     )
     database_url: str = "sqlite+aiosqlite:////data/lagent.db"
 
+    # LLM execution mode:
+    #   "local"    — in-cluster llama.cpp only (default)
+    #   "external" — only the configured external provider (LLM_FALLBACK_* or
+    #                LLM_FALLBACK_PROVIDER); the local model is never called
+    #   "hybrid"   — start local, escalate to the external provider
+    # Leave empty to derive local/hybrid from the legacy LLM_HYBRID_ENABLED
+    # boolean. External traffic stays opt-in: "external"/"hybrid" only works
+    # once AGENT_LLM_FALLBACK_BASE_URL (or a provider profile) is configured.
+    llm_mode: str = ""
     # LLM (OpenAI-compatible). Defaults to the in-cluster Gemma; point
     # LLM_BASE_URL/LLM_MODEL/LLM_API_KEY at a hosted provider (e.g. DeepSeek)
     # to use that instead.
@@ -203,7 +212,8 @@ class Settings(BaseSettings):
     nightwatch_correlation_window_minutes: int = 10
     nightwatch_retention_days: int = 90
     nightwatch_llm_enabled: bool = True
-    nightwatch_llm_profile: str = "local"
+    # Empty means "use the agent's active LLM profile" (LLM_MODE aware).
+    nightwatch_llm_profile: str = ""
     nightwatch_max_concurrent_investigations: int = 3
     nightwatch_rca_queries_file: str = ""
     nightwatch_assignment_label: str = "nightwatch.strata.io/enabled"
@@ -276,6 +286,7 @@ def get_runtime(key: str):
 def get_all_runtime_settings() -> dict:
     defaults = {
         "system_prompt": settings.agent_system_prompt,
+        "llm_mode": settings.llm_mode,
         "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
         "llm_api_key": settings.llm_api_key,

@@ -78,10 +78,11 @@ class OpenCodeAgentService:
         if cwd:
             working_dir = cwd
         else:
-            # Prefer the writable MonoFS workspace so code edits land in the mount.
-            from app.agent.workspace import mount_active, mount_root
+            # Prefer the writable MonoFS FUSE mount so code edits land there.
+            # Headless workspaces have no real directory to use as a cwd.
+            from app.agent.workspace import fuse_mount_active, mount_root
 
-            working_dir = str(mount_root()) if mount_active() else os.getcwd()
+            working_dir = str(mount_root()) if fuse_mount_active() else os.getcwd()
         resume_id = self._resume_by_session.get(session_id or "")
 
         logger.info(

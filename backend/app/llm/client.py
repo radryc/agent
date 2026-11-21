@@ -18,6 +18,46 @@ _clients: dict[tuple[str, str], httpx.AsyncClient] = {}
 _DEFAULT_CHAT_PATH = "/v1/chat/completions"
 _DEFAULT_MODELS_PATH = "/v1/models"
 
+# Execution modes for the LLM backend. See settings.llm_mode.
+LLM_MODE_LOCAL = "local"
+LLM_MODE_EXTERNAL = "external"
+LLM_MODE_HYBRID = "hybrid"
+LLM_MODES = (LLM_MODE_LOCAL, LLM_MODE_EXTERNAL, LLM_MODE_HYBRID)
+
+
+def llm_mode() -> str:
+    """Effective LLM mode: ``local``, ``external``, or ``hybrid``.
+
+    ``external`` sends every completion to the configured external provider and
+    never calls the in-cluster model. When the mode is unset, the legacy
+    ``LLM_HYBRID_ENABLED`` boolean decides between ``local`` and ``hybrid`` so
+    existing deployments keep their behavior.
+    """
+    raw = str(get_runtime("llm_mode") or "").strip().lower()
+    if raw in LLM_MODES:
+        return raw
+    if raw:
+        logger.warning("Unknown llm_mode %r; falling back to %s", raw, LLM_MODE_LOCAL)
+        return LLM_MODE_LOCAL
+    if runtime_bool("llm_hybrid_enabled", default=False):
+        return LLM_MODE_HYBRID
+    return LLM_MODE_LOCAL
+
+
+def external_profile() -> str:
+    """Profile id of the configured external provider."""
+    provider = str(get_runtime("llm_fallback_provider") or "").strip()
+    return f"provider:{provider}" if provider else "fallback"
+
+
+def external_only() -> bool:
+    return llm_mode() == LLM_MODE_EXTERNAL
+
+
+def default_profile() -> str:
+    """Profile a new turn starts on for the active mode."""
+    return external_profile() if external_only() else "local"
+
 
 def _parse_json_object(raw: Any, *, what: str) -> dict:
     if isinstance(raw, dict):
@@ -170,8 +210,13 @@ def _profile_config(profile: str) -> dict:
       - "steve":    Steve's coding engine (STEVE_LLM_*), e.g. DeepSeek
       - "fallback": the hybrid escalation target (LLM_FALLBACK_*)
       - "provider:<name>": any entry from LLM_PROVIDERS_JSON
+
+    In ``external`` mode a request for "local" is redirected to the configured
+    external provider, so no code path can reach the in-cluster model.
     """
-    profile = str(profile or "local").strip()
+    profile = str(profile or "local").strip() or "local"
+    if profile == "local" and external_only():
+        profile = external_profile()
     if profile == "steve":
         base_url = normalize_url(
             str(
@@ -199,6 +244,11 @@ def _profile_config(profile: str) -> dict:
     return _local_config()
 
 
+def profile_config(profile: str = "local") -> dict:
+    """Public accessor for a resolved profile (raises ValueError if unknown)."""
+    return _profile_config(profile)
+
+
 def profile_supports_grammar(profile: str = "local") -> bool:
     try:
         return bool(_profile_config(profile).get("supports_grammar"))
@@ -208,8 +258,11 @@ def profile_supports_grammar(profile: str = "local") -> bool:
 
 def profile_available(profile: str = "local") -> bool:
     """Cheap configuration check (does not probe the network)."""
+    requested = str(profile or "local").strip() or "local"
+    if requested == "local" and external_only():
+        return False
     try:
-        config = _profile_config(profile)
+        config = _profile_config(requested)
     except ValueError:
         return False
     if config["id"] == "local":
@@ -233,7 +286,19 @@ def profile_label(profile: str = "local") -> str:
 
 def available_profiles() -> list[dict]:
     """Configured profiles, for status/settings surfaces."""
-    profiles = [{"id": "local", "available": True, "label": profile_label("local")}]
+    active = default_profile()
+    if external_only():
+        local_label = "Local model (disabled: external-only mode)"
+    else:
+        local_label = profile_label("local")
+    profiles = [
+        {
+            "id": "local",
+            "available": not external_only(),
+            "label": local_label,
+            "default": active == "local",
+        }
+    ]
     try:
         fallback = _fallback_config()
     except ValueError:
@@ -249,6 +314,7 @@ def available_profiles() -> list[dict]:
             "label": fallback["label"],
             "base_url": fallback["base_url"],
             "model": fallback["model"],
+            "default": active == "fallback",
         }
     )
     for name in provider_profiles():
@@ -263,6 +329,7 @@ def available_profiles() -> list[dict]:
                 "label": config["label"],
                 "base_url": config["base_url"],
                 "model": config["model"],
+                "default": config["id"] == active,
             }
         )
     return profiles
@@ -280,11 +347,16 @@ def _get_client(profile: str = "local") -> tuple[httpx.AsyncClient, dict]:
     cache_key = (config["base_url"], config["api_key"])
     client = _clients.get(cache_key)
     if client is None or client.is_closed:
+        # Never offer the platform mTLS identity to a third-party LLM host; the
+        # verification context still trusts both the Strata CA and public roots.
+        tls_kwargs = httpx_client_kwargs(
+            include_client_cert=not is_external_llm_url(config["base_url"])
+        )
         client = httpx.AsyncClient(
             base_url=config["base_url"],
             headers=_auth_headers(config),
             timeout=httpx.Timeout(connect=10.0, read=180.0, write=10.0, pool=10.0),
-            **httpx_client_kwargs(),
+            **tls_kwargs,
         )
         _clients[cache_key] = client
     return client, config
@@ -406,7 +478,11 @@ async def check_health() -> bool:
     # the local llama.cpp server exposes /health.
     try:
         client, config = _get_client()
-        for path in ("/health", config["models_path"]):
+        if config["id"] == "local":
+            probes = ("/health", config["models_path"])
+        else:
+            probes = (config["models_path"],)
+        for path in probes:
             try:
                 resp = await client.get(path)
             except Exception:
@@ -438,11 +514,14 @@ async def list_models(profile: str = "local") -> list[dict] | None:
 
 
 def hybrid_enabled() -> bool:
-    return runtime_bool("llm_hybrid_enabled", default=False)
+    return llm_mode() == LLM_MODE_HYBRID
 
 
 def fallback_ready() -> bool:
-    return hybrid_enabled() and profile_available("fallback")
+    """True when the external provider is configured for the active mode."""
+    return llm_mode() in (LLM_MODE_HYBRID, LLM_MODE_EXTERNAL) and profile_available(
+        external_profile()
+    )
 
 
 def hybrid_after_rounds() -> int:

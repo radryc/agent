@@ -20,6 +20,7 @@ from app.agent.contracts import (
 from app.agent.golden_signals import analyze_golden_signals
 from app.agent.sre_flow import _synthesize_verdict
 from app.config import runtime_bool, settings
+from app.llm.client import default_profile
 from app.nightwatch.llm import assess as legacy_assess
 
 logger = logging.getLogger(__name__)
@@ -181,7 +182,7 @@ async def assess_with_flow(pack: dict[str, Any]) -> dict[str, Any]:
             topology=topology,
             emit=None,
             task_name="outage_otto.nightwatch",
-            profile=settings.nightwatch_llm_profile or "local",
+            profile=settings.nightwatch_llm_profile or default_profile(),
             golden_signals=golden_signals,
         )
     except Exception as exc:  # pragma: no cover - defensive

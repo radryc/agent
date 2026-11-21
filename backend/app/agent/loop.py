@@ -16,8 +16,10 @@ from app.agent.tools import execute_tool, build_tool_instructions, get_skill
 from app.config import get_runtime, runtime_bool
 from app.llm.client import (
     chat_completion,
+    default_profile,
     fallback_ready,
     hybrid_after_rounds,
+    hybrid_enabled,
     max_tool_rounds,
     profile_label,
     profile_supports_grammar,
@@ -406,8 +408,9 @@ def _tool_grammar(profile: str) -> str | None:
 
 
 def _can_escalate(profile: str) -> bool:
-    # Only local turns escalate; Steve may already be on an external engine.
-    return profile == "local" and fallback_ready()
+    # Only hybrid local turns escalate; external-only turns have nowhere to go
+    # and Steve may already be on an external engine.
+    return profile == "local" and hybrid_enabled() and fallback_ready()
 
 
 async def _model_round(
@@ -548,9 +551,10 @@ async def run_agent_turn(
     *,
     stream: bool = True,
     persona_id: str = DEFAULT_PERSONA_ID,
-    profile: str = "local",
+    profile: str | None = None,
     allowed_override: set[str] | None = None,
 ) -> AsyncIterator[str] | str:
+    profile = profile or default_profile()
     persona = get_persona(persona_id) or get_persona(DEFAULT_PERSONA_ID)
     if user_message.strip().lower() == "/help":
         help_text = _help_text(persona.id)
@@ -619,7 +623,7 @@ async def run_agent_turn(
 async def _run_tool_loop(
     messages: list[dict],
     *,
-    profile: str = "local",
+    profile: str | None = None,
     allowed: set[str] | None = None,
     require_tools: bool = False,
     metric_value: bool = False,
@@ -630,6 +634,7 @@ async def _run_tool_loop(
     Starts on the requested profile and escalates to the hybrid fallback when
     the loop stalls (round budget) or a tool call cannot be parsed.
     """
+    profile = profile or default_profile()
     nudged = False
     metric_nudged = False
     used_tools = False
@@ -748,7 +753,7 @@ async def _stream_tool_loop(
     messages: list[dict],
     session_id: str,
     *,
-    profile: str = "local",
+    profile: str | None = None,
     allowed: set[str] | None = None,
     persona_id: str = DEFAULT_PERSONA_ID,
     require_tools: bool = False,
@@ -761,6 +766,7 @@ async def _stream_tool_loop(
     returns its JSON tool-call line for non-streaming requests, but emits native
     DSML markup in streaming mode, which the loop cannot reliably parse.
     """
+    profile = profile or default_profile()
     working_messages = list(messages)
     nudged = False
     metric_nudged = False

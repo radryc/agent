@@ -61,6 +61,9 @@ spec:
             containerPort: 8090
             protocol: TCP
         env:
+          # local (default) | external | hybrid. Set "external" (and configure
+          # the fallback provider) to run without the local model.
+          LLM_MODE: "local"
           LLM_BASE_URL: http://lagent-llm:8080
           DATABASE_URL: sqlite+aiosqlite:////data/lagent.db
           AGENT_NAME: OutageOtto
@@ -73,8 +76,10 @@ spec:
           AUTO_SWITCH_ENABLED: "true"
           AGENT_FLOW_ENABLED: "true"
           AUTO_PUSH_ENABLED: "false"
-          # Writable MonoFS workspace (requires /dev/fuse + SYS_ADMIN on the docker pusher)
+          # Writable MonoFS workspace. MONOFS_HEADLESS=true uses the session
+          # socket (no /dev/fuse, no SYS_ADMIN); false mounts FUSE.
           MONOFS_ROUTER: ""
+          MONOFS_HEADLESS: "false"
           MONOFS_MOUNT: /workspace
           MONOFS_OVERLAY: /data/monofs-overlay
           OTEL_ENABLED: "true"
@@ -110,6 +115,7 @@ spec:
           NIGHTWATCH_SENTINEL_URL: http://host.docker.internal:18082
           DOCTOR_QUERY_URL: http://host.docker.internal:18080
           GUARDIAN_URL: http://host.docker.internal:8090
+          LLM_MODE: "local"
           LLM_BASE_URL: http://lagent-llm:8080
           NIGHTWATCH_LLM_ENABLED: "true"
           OTEL_ENABLED: "false"

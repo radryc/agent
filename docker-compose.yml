@@ -60,6 +60,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      # local (default) | external | hybrid. "external" makes every LLM call
+      # go to the fallback/provider below; the local model is never called.
+      LLM_MODE: ${LLM_MODE:-local}
       LLM_BASE_URL: http://llm:8080
       LLM_MODEL: ${LLM_MODEL:-gemma-4-E4B-it}
       LLM_API_KEY: ${LLM_API_KEY:-}
@@ -91,8 +94,10 @@ services:
       AUTO_SWITCH_ENABLED: ${AUTO_SWITCH_ENABLED:-true}
       AGENT_FLOW_ENABLED: ${AGENT_FLOW_ENABLED:-true}
       AUTO_PUSH_ENABLED: ${AUTO_PUSH_ENABLED:-false}
-      # Writable MonoFS workspace (set MONOFS_ROUTER to enable)
+      # Writable MonoFS workspace (set MONOFS_ROUTER to enable).
+      # MONOFS_HEADLESS=true skips FUSE and uses the session socket.
       MONOFS_ROUTER: ${MONOFS_ROUTER:-}
+      MONOFS_HEADLESS: ${MONOFS_HEADLESS:-false}
       MONOFS_MOUNT: ${MONOFS_MOUNT:-/workspace}
       MONOFS_OVERLAY: ${MONOFS_OVERLAY:-/data/monofs-overlay}
       MONOFS_OVERLAY_DIR: ${MONOFS_OVERLAY:-/data/monofs-overlay}
@@ -124,8 +129,11 @@ services:
       AWS_EC2_METADATA_DISABLED: "true"
       AWS_REGION: ${AWS_REGION:-us-east-1}
     depends_on:
+      # `required: false` lets LLM_MODE=external start without the local model
+      # container while still ordering startup when it is present.
       llm:
         condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8090/api/health"]
       interval: 15s

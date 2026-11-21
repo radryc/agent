@@ -33,7 +33,7 @@ flowchart LR
     NW -. OTLP traces/metrics .-> OTEL
 ```
 
-The backend runs as a single FastAPI application. Docker Compose also runs a llama.cpp server for the default local model and an nginx container that serves the built frontend and proxies `/api/` and `/ws/` to the backend. Nightwatch is not a separate Compose service; the same image is started with `uvicorn app.nightwatch.main:app` in its own partition.
+The backend runs as a single FastAPI application. Docker Compose also runs a llama.cpp server for the default local model and an nginx container that serves the built frontend and proxies `/api/` and `/ws/` to the backend. Nightwatch is not a separate Compose service; the same image is started with `python -m app.server --app app.nightwatch.main:app` in its own partition.
 
 ## Components
 
@@ -45,9 +45,9 @@ The backend runs as a single FastAPI application. Docker Compose also runs a lla
 | Personas and routing (`agent/personas.py`, `agent/router.py`) | Otto (SRE) and Steve (software engineering) personas. Auto routing uses explicit `@otto`/`@steve`, keyword votes, sticky follow-up handling, and a local-model classifier. |
 | Specialists (`agent/specialists.py`) | Scoped mini tool loops with explicit allowlists: TelemetryHound, TopologyAuditor, OutageOtto synthesis, and SoftwareSteve. |
 | Tool catalog (`agent/tools.py`) | 53 registered tools in `general`, `strata`, `guardian`, `doctor`, `nightwatch`, `monofs`, and `workspace` categories. Each skill declares its parameters, status text, and whether it mutates state. |
-| LLM client (`llm/client.py`, `llm/presets.py`) | OpenAI-compatible chat completions with profiles `local`, `steve`, `fallback`, and `provider:<name>`. Optional llama.cpp grammar-constrained tool calls and hybrid escalation. |
+| LLM client (`llm/client.py`, `llm/presets.py`) | OpenAI-compatible chat completions with profiles `local`, `steve`, `fallback`, and `provider:<name>`. `LLM_MODE` selects local-only (default), external-only, or hybrid; in external-only mode `local` is redirected to the configured provider. Optional llama.cpp grammar-constrained tool calls and hybrid escalation. |
 | Nightwatch worker (`nightwatch/`) | Shadow-mode observer that polls Sentinel alerts, correlates incidents, collects evidence, records findings and observability improvements, and recommends but never executes actions. |
-| Workspace sandbox (`agent/workspace.py`) | MonoFS FUSE mount at `/workspace` with a local overlay at `/data/monofs-overlay`. Provides confined read/list/write/diff and `monofs-session` commit/push. |
+| Workspace sandbox (`agent/workspace.py`) | MonoFS workspace with a local overlay at `/data/monofs-overlay`. Uses the FUSE mount at `/workspace` when it is mounted, otherwise the session-socket filesystem API (the headless mode started by `MONOFS_HEADLESS=true`). Provides confined read/list/write/diff and `monofs-session` commit/push. |
 | Frontend (`frontend/src`) | React 19 + Vite + Tailwind. Pages: landing, chat, Guardian dashboard, Nightwatch, settings, and an embeddable Ask Strata drawer. |
 | Telemetry (`telemetry/otel.py`) | OTLP gRPC trace and metric export for the API and the Nightwatch process, with FastAPI instrumentation. |
 
@@ -72,22 +72,22 @@ The backend runs as a single FastAPI application. Docker Compose also runs a lla
 
 ## Runtime and configuration
 
-Configuration is read from environment variables by `pydantic-settings`. Runtime overrides saved through `PUT /api/settings` are persisted to `/data/lagent_settings.json` and take precedence until restart. Secrets are masked by `GET /api/settings` and blank secret fields in a `PUT` do not overwrite stored values.
+Configuration is read from environment variables by `pydantic-settings`. Runtime overrides saved through `PUT /api/settings` are persisted to `/data/lagent_settings.json`, take precedence over environment defaults, and are reloaded on startup. Secrets are masked by `GET /api/settings` and blank secret fields in a `PUT` do not overwrite stored values.
 
 | Area | Variables | Notes |
 | --- | --- | --- |
 | Local model server | `MODEL_PRESET`, `MODEL_REPO`, `MODEL_FILE`, `CTX_SIZE`, `N_GPU_LAYERS`, `THREADS`, `PARALLEL`, `REASONING_FORMAT`, `EXTRA_ARGS` | Presets: `gemma4-e4b` (default), `qwen3.5-9b`, `qwen3.5-4b`, `custom`. Weights are downloaded by the `llm` container. |
-| Primary LLM | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Any OpenAI-compatible endpoint. Defaults to `http://llm:8080`. |
+| Primary LLM | `LLM_MODE`, `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | `LLM_MODE=local` (the default when unset) uses the in-cluster endpoint at `LLM_BASE_URL`. `LLM_MODE=external` sends every turn to the fallback/provider endpoint and never calls the local model; `LLM_MODE=hybrid` starts local and escalates. Empty `LLM_MODE` derives local/hybrid from `LLM_HYBRID_ENABLED`. |
 | Tool-call and hybrid behavior | `LLM_GRAMMAR_ENABLED`, `LLM_TOOL_GRAMMAR`, `LLM_REQUEST_EXTRA`, `LLM_HYBRID_ENABLED`, `LLM_HYBRID_AFTER_ROUNDS`, `LLM_MAX_TOOL_ROUNDS` | Grammar applies only to profiles that declare grammar support (local llama.cpp by default). Hybrid escalation uses the fallback profile. |
 | Fallback and providers | `AGENT_LLM_FALLBACK_BASE_URL`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_PROVIDER`, `LLM_PROVIDERS_JSON` | External fallback is opt-in; the base URL is empty by default. Named provider profiles are JSON objects and are selected with `provider:<name>`. |
-| Steve engine | `STEVE_ENGINE`, `AGENT_STEVE_LLM_BASE_URL`, `STEVE_LLM_MODEL`, `STEVE_LLM_API_KEY`, `AUTO_SWITCH_ENABLED` | Empty engine auto-detects OpenCode, then DeepSeek (when an external base URL is explicitly configured), then local. Otto always uses the local profile. |
+| Steve engine | `STEVE_ENGINE`, `AGENT_STEVE_LLM_BASE_URL`, `STEVE_LLM_MODEL`, `STEVE_LLM_API_KEY`, `AUTO_SWITCH_ENABLED` | Empty engine auto-detects OpenCode, then DeepSeek (when its external base URL and API key are configured), then the default profile. Otto runs on the default profile, which is external when `LLM_MODE=external`; in hybrid mode triage synthesis prefers the external provider when one is configured. |
 | OpenCode | `OPENCODE_API_KEY`, `OPENCODE_SERVER_URL`, `OPENCODE_MODEL`, `OPENCODE_PROVIDER_ID`, `OPENCODE_SYSTEM_PROMPT` | Optional external coding engine for Steve. |
 | Agent behavior | `AGENT_NAME`, `AGENT_SYSTEM_PROMPT`, `AGENT_FLOW_ENABLED`, `AUTO_PUSH_ENABLED`, `TRIAGE_LOOKBACK_MINUTES`, `TRIAGE_PREROLL_MINUTES`, `TRIAGE_MAX_WINDOW_MINUTES`, `TRIAGE_MAX_PARALLEL_QUERIES` | `AGENT_FLOW_ENABLED=false` falls back to the legacy single-agent loop. `AUTO_PUSH_ENABLED` waives commit/push confirmation. `TRIAGE_*` vars bound incident-scoped telemetry windows and query concurrency. |
 | Persistence | `DATABASE_URL` | Session and message store; default SQLite at `/data/lagent.db`. |
 | SSO / OIDC | `AGENT_OIDC_ISSUER`, `AGENT_OIDC_TOKEN_URL`, `AGENT_OIDC_AUTHORIZATION_URL`, `AGENT_OIDC_DEVICE_AUTHORIZATION_URL`, `AGENT_OIDC_REDIRECT_URL`, `AGENT_OIDC_CLIENT_ID`, `AGENT_OIDC_CLIENT_SECRET`, `AGENT_OIDC_AUDIENCE`, `AGENT_OIDC_SCOPE`, `AGENT_OIDC_TOKEN`, `AGENT_OIDC_PUBLIC_BASE_URL` | Static token, browser authorization-code + PKCE, device flow, and client credentials. |
 | Platform services | `GUARDIAN_URL`, `DOCTOR_QUERY_URL`, `LB_EDGE_REGISTRY_URL` | Guardian, Doctor query, and LB Edge registry endpoints. |
 | TLS / mTLS | `STRATA_TLS_MODE`, `STRATA_TLS_CERT_FILE`, `STRATA_TLS_KEY_FILE`, `STRATA_TLS_CA_FILE`, `STRATA_TLS_SERVER_NAME`, `STRATA_TLS_REQUIRE_CLIENT_CERT` | Shared Strata contract. `off` is the default; `required` fails closed without a PKI and upgrades outbound service URLs to HTTPS. |
-| MonoFS workspace | `MONOFS_ROUTER`, `MONOFS_MOUNT`, `MONOFS_OVERLAY_DIR`, `MONOFS_OVERLAY`, `MONOFS_SEARCH_ADDR` | Empty router leaves workspace tools unavailable. `MONOFS_OVERLAY_DIR` takes precedence over `MONOFS_OVERLAY` and is shared with `monofs-client` for `session.sock`. |
+| MonoFS workspace | `MONOFS_ROUTER`, `MONOFS_HEADLESS`, `MONOFS_MOUNT`, `MONOFS_OVERLAY_DIR`, `MONOFS_OVERLAY`, `MONOFS_SEARCH_ADDR` | Empty router leaves workspace tools unavailable. `MONOFS_HEADLESS=true` runs `monofs-client --headless` and the backend then uses the session socket instead of a FUSE mount. `MONOFS_OVERLAY_DIR` takes precedence over `MONOFS_OVERLAY` and is shared with `monofs-client` for `session.sock`. |
 | Nightwatch | `NIGHTWATCH_URL`, `NIGHTWATCH_PROXY_TOKEN`, `NIGHTWATCH_ENABLED`, `NIGHTWATCH_MODE`, `NIGHTWATCH_POLL_INTERVAL_SECONDS`, `NIGHTWATCH_SENTINEL_URL`, `NIGHTWATCH_DB_URL`, `NIGHTWATCH_TENANT`, `NIGHTWATCH_ASSIGNMENT_LABEL`, `NIGHTWATCH_ESCALATION_CONFIDENCE`, `NIGHTWATCH_ESCALATION_AFTER_MINUTES`, `NIGHTWATCH_CORRELATION_WINDOW_MINUTES`, `NIGHTWATCH_RETENTION_DAYS`, `NIGHTWATCH_MAX_CONCURRENT_INVESTIGATIONS`, `NIGHTWATCH_RCA_QUERIES_FILE`, `NIGHTWATCH_LLM_ENABLED`, `NIGHTWATCH_LLM_PROFILE` | Shadow mode is enforced. The interactive backend only proxies Nightwatch reads. |
 | Telemetry | `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_INSECURE`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_METRIC_EXPORT_INTERVAL_MS` | OTLP gRPC traces and metrics; disabled by default in `config.py` unless `OTEL_ENABLED=true` (enabled by default in `docker-compose.yml`). |
 
@@ -106,10 +106,33 @@ Services and host ports:
 | Service | Host port | Notes |
 | --- | --- | --- |
 | `frontend` | 3000 | nginx serves the SPA and proxies `/api/` and `/ws/` to `lagent-backend:8090`. |
-| `backend` | 8090 | FastAPI, health at `/api/health`. Requires `/dev/fuse`, `SYS_ADMIN`, and unconfined AppArmor for the writable MonoFS mount. |
+| `backend` | 8090 | FastAPI, health at `/api/health`. A writable MonoFS mount requires `/dev/fuse`, `SYS_ADMIN`, and unconfined AppArmor; `MONOFS_HEADLESS=true` avoids all three. |
 | `llm` | 18080 | llama.cpp OpenAI-compatible server; container port 8080. Model weights live in the `llm-models` volume. |
 
 Useful Makefile targets: `up`, `down`, `logs`, `build`, `dev` (`up --build`), `status`, `restart`, `clean`, `llm-logs`, `backend-logs`, `frontend-logs`.
+
+### External-only LLM mode
+
+The agent starts on the in-cluster model. To run it against a hosted
+OpenAI-compatible provider instead — with the local model never called — set:
+
+```bash
+LLM_MODE=external
+AGENT_LLM_FALLBACK_BASE_URL=https://api.deepseek.com
+LLM_FALLBACK_MODEL=deepseek-chat
+LLM_FALLBACK_API_KEY=...
+# Or select a named profile; it wins over the three variables above:
+# LLM_FALLBACK_PROVIDER=deepseek
+```
+
+`LLM_MODE` is also editable at runtime from Settings → Routing & Reliability
+(`PUT /api/settings`). In `external` mode the `local` profile is redirected to
+the external provider, so Otto, the specialists, Nightwatch, and any Steve turn
+that falls back to the default profile use it, and no request reaches
+`LLM_BASE_URL`. Steve still follows its own engine settings when OpenCode or a
+dedicated DeepSeek endpoint is configured. The Compose `llm` dependency is
+marked `required: false`, so the local model container can be omitted entirely.
+`LLM_MODE=hybrid` keeps the previous local-first escalation behavior.
 
 ### TLS / mTLS
 
@@ -132,7 +155,7 @@ The override mounts `./.tls/agent` at `/var/run/secrets/strata-tls`, sets `STRAT
 
 **Strict mTLS.** `STRATA_TLS_REQUIRE_CLIENT_CERT=true` makes uvicorn request and verify client certificates. The Compose override defaults it to `false` so the bundled nginx proxy keeps working. For strict mTLS, set it to `true` and give every client a certificate signed by the CA: nginx needs `proxy_ssl_certificate`/`proxy_ssl_certificate_key` in `frontend/nginx.mtls.conf`, and the backend health check already presents `tls.crt`/`tls.key`.
 
-**Outbound calls.** In `required` mode, scheme-less Doctor, Guardian, LB Edge (MonoFS edge), Nightwatch, OpenCode, OIDC, and LLM URLs get `https://`. Explicit `http://` URLs are left as configured, which keeps the local plaintext llama.cpp server working; configure `https://` or omit the scheme to force TLS. When `STRATA_TLS_CA_FILE` is set, internal `httpx` clients verify with that bundle and present the service certificate for outbound mTLS. Include public roots in the bundle if a hosted LLM or external IdP is configured. `MONOFS_ROUTER` and `MONOFS_SEARCH_ADDR` are CLI addresses rather than HTTP URLs, so they are left unchanged.
+**Outbound calls.** In `required` mode, scheme-less Doctor, Guardian, LB Edge (MonoFS edge), Nightwatch, OpenCode, and LLM URLs get `https://`. OIDC endpoint URLs are used as configured. Explicit `http://` URLs are left as configured, which keeps the local plaintext llama.cpp server working; configure `https://` or omit the scheme to force TLS. When `STRATA_TLS_CA_FILE` is set, internal `httpx` clients verify against the system trust store plus that CA bundle and present the service certificate for outbound mTLS. The CA bundle augments public roots rather than replacing them, and the service certificate is withheld from third-party LLM endpoints. `MONOFS_ROUTER` and `MONOFS_SEARCH_ADDR` are CLI addresses rather than HTTP URLs, so they are left unchanged.
 
 **OTLP is separate.** OTLP exporters do not read `STRATA_TLS_*`. For a TLS collector, use an `https://` endpoint with `OTEL_EXPORTER_OTLP_INSECURE=false`, and set `OTEL_EXPORTER_OTLP_CERTIFICATE` or `SSL_CERT_FILE` for a private CA.
 
@@ -162,7 +185,7 @@ npm run build      # tsc -b && vite build
 
 ### Tests
 
-`tests/` contains 16 unittest-style modules (165 test functions) covering routing, personas, the SRE flow, tool loop and hybrid behavior, Guardian detail rendering, workspace confinement, OIDC, proposals, Nightwatch, graph validation, and Compose configuration:
+`tests/` contains 18 unittest-style modules (252 test functions) covering routing, personas, the SRE flow, tool loop and hybrid behavior, Guardian detail rendering, workspace confinement, OIDC, proposals, Nightwatch, graph validation, and Compose configuration:
 
 ```bash
 python -m unittest discover -s tests
@@ -182,10 +205,10 @@ The Compose configuration test shells out to `docker compose config` and therefo
 
 ### Mutations require confirmation
 
-Five tools are marked mutating: `guardian_reconcile`, `guardian_deploy_partition`, `remote_vscode_install`, `workspace_commit`, and `workspace_push`. The dispatcher refuses to run them unless `args.confirm=true`, unless a declared runtime switch waives the gate.
+Six tools are marked mutating: `guardian_reconcile`, `guardian_deploy_partition`, `remote_vscode_install`, `workspace_write`, `workspace_commit`, and `workspace_push`. The dispatcher refuses to run them unless `args.confirm=true`, unless a declared runtime switch waives the gate.
 
 - `guardian_deploy_partition` is proposal-only by default: `plan_only=true` returns the planned `guardianctl` commands and executes nothing. Execution requires `plan_only=false` and `confirm=true`.
-- `workspace_commit` and `workspace_push` are waived only when `auto_push_enabled` is true. `workspace_session` action `discard` separately requires `confirm=true` and is irreversible.
+- `workspace_commit` and `workspace_push` are waived only when `auto_push_enabled` is true; `workspace_write` has no waiver. `workspace_session` action `discard` separately requires `confirm=true` and is irreversible.
 - Interactive mutation routes register a `PendingApproval` and emit `approval_required` over the WebSocket. Nothing runs until the user approves. `resolve_approval` then re-executes the tool with `confirm=true`. Pending approvals are process-local and are not persisted.
 - The Nightwatch proposal endpoint starts a Steve turn in the background with an explicit no-commit/no-push instruction; it produces a reviewable diff or an implementation plan.
 - Workspace edits are overlay changes until a virtual commit. A push is the irreversible boundary.
@@ -194,9 +217,9 @@ Five tools are marked mutating: `guardian_reconcile`, `guardian_deploy_partition
 
 The OIDC provider resolves access tokens in this order: static `AGENT_OIDC_TOKEN`, a valid interactive user token, a refresh of that user token, a cached machine token, then a client-credentials grant. Browser login uses authorization code with PKCE; the device flow is also supported. A signed-in user token takes precedence over the machine identity so Doctor visibility follows the user.
 
-The same access token is used for Guardian, Doctor, MonoFS, and Nightwatch calls. Guardian and Doctor requests carry it as a Bearer header; MonoFS CLI calls receive `MONOFS_TOKEN` in their environment. The Nightwatch proxy uses `X-Nightwatch-Token`. For an interactive SSO user, the Agent also resolves the user’s Doctor partition scope and forwards it as `X-Nightwatch-Partition-Access`, so the Nightwatch UI only shows incidents for partitions that user can access. LLM API keys are sent as bearer tokens to their configured OpenAI-compatible endpoints.
+The same access token is used for Guardian, Doctor, MonoFS, and the Nightwatch worker's upstream calls. Guardian and Doctor requests carry it as a Bearer header; MonoFS CLI calls receive `MONOFS_TOKEN` in their environment. The interactive Nightwatch proxy uses `X-Nightwatch-Token` rather than the user's access token. For an interactive SSO user, the Agent also resolves the user’s Doctor partition scope and forwards it as `X-Nightwatch-Partition-Access`, so the Nightwatch UI only shows incidents for partitions that user can access. LLM API keys are sent as bearer tokens to their configured OpenAI-compatible endpoints.
 
-The settings API never returns stored secrets or the `llm_providers_json` blob; it returns masked values and `*_set` flags. Blank secret values in a settings update are ignored. The backend container runs as the `developer` user, which the image grants passwordless sudo and which has `/dev/fuse` access in Compose; terminal mode is an interactive shell inside that container and is not approval-gated, so treat the backend as a trusted deployment boundary.
+The settings API never returns stored secrets or the `llm_providers_json` blob; it returns masked values and `*_set` flags. Blank secret values in a settings update are ignored. The backend container runs as the `developer` user, which has `/dev/fuse` access in Compose; terminal mode (enabled by `AGENT_TERMINAL_ENABLED=true`) is an interactive shell inside that container and is not approval-gated, so treat the backend as a trusted deployment boundary.
 
 ## License
 

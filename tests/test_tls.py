@@ -14,6 +14,32 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 from app.security import tls  # noqa: E402
 
 
+def _write_test_ca(path: Path) -> None:
+    """Write a throwaway self-signed CA certificate in PEM form."""
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "strata-test-ca")])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
 class TLSModeTest(unittest.TestCase):
     def test_empty_mode_is_off(self):
         self.assertEqual(tls.parse_tls_mode(""), tls.MODE_OFF)
@@ -184,20 +210,28 @@ class HTTPVerifyTest(unittest.TestCase):
         self.cert = self.dir / "tls.crt"
         self.key = self.dir / "tls.key"
         self.ca = self.dir / "ca.crt"
-        for path in (self.cert, self.key, self.ca):
+        for path in (self.cert, self.key):
             path.write_text("test\n")
+        _write_test_ca(self.ca)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_ca_bundle_is_used_when_configured(self):
-        env = {
+    def _env(self):
+        return {
             "STRATA_TLS_MODE": "required",
             "STRATA_TLS_CERT_FILE": str(self.cert),
             "STRATA_TLS_KEY_FILE": str(self.key),
             "STRATA_TLS_CA_FILE": str(self.ca),
         }
-        self.assertEqual(tls.http_verify(env=env), str(self.ca))
+
+    def test_ca_bundle_augments_default_trust_store(self):
+        verify = tls.http_verify(env=self._env())
+        self.assertIsInstance(verify, ssl.SSLContext)
+        default_roots = len(ssl.create_default_context().get_ca_certs())
+        self.assertGreaterEqual(len(verify.get_ca_certs()), default_roots + 1)
+        subjects = [str(entry.get("subject", "")) for entry in verify.get_ca_certs()]
+        self.assertTrue(any("strata-test-ca" in subject for subject in subjects))
 
     def test_default_trust_store_when_off(self):
         self.assertIs(tls.http_verify(env={"STRATA_TLS_MODE": "off"}), True)
@@ -206,15 +240,16 @@ class HTTPVerifyTest(unittest.TestCase):
         self.assertEqual(tls.httpx_client_kwargs(env={"STRATA_TLS_MODE": "off"}), {})
 
     def test_httpx_kwargs_include_ca_and_client_cert(self):
-        env = {
-            "STRATA_TLS_MODE": "required",
-            "STRATA_TLS_CERT_FILE": str(self.cert),
-            "STRATA_TLS_KEY_FILE": str(self.key),
-            "STRATA_TLS_CA_FILE": str(self.ca),
-        }
-        kwargs = tls.httpx_client_kwargs(env=env)
-        self.assertEqual(kwargs["verify"], str(self.ca))
+        kwargs = tls.httpx_client_kwargs(env=self._env())
+        self.assertIsInstance(kwargs["verify"], ssl.SSLContext)
         self.assertEqual(kwargs["cert"], (str(self.cert), str(self.key)))
+
+    def test_client_cert_can_be_withheld_for_external_endpoints(self):
+        kwargs = tls.httpx_client_kwargs(
+            env=self._env(), include_client_cert=False
+        )
+        self.assertNotIn("cert", kwargs)
+        self.assertIsInstance(kwargs["verify"], ssl.SSLContext)
 
 
 class URLNormalizationTest(unittest.TestCase):

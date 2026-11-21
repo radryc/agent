@@ -8,7 +8,12 @@ import time
 from fastapi import APIRouter, Response
 
 from app.config import settings, get_runtime
-from app.llm.client import check_health as llm_health
+from app.llm.client import (
+    check_health as llm_health,
+    default_profile,
+    llm_mode,
+    profile_config,
+)
 from app.telemetry.metrics import LLM_READY, render_metrics
 
 router = APIRouter(tags=["health"])
@@ -91,8 +96,13 @@ async def metrics():
 
 @router.get("/api/agent")
 async def agent_info():
+    try:
+        model = str(profile_config(default_profile()).get("model") or "")
+    except ValueError:
+        model = ""
     return {
         "name": settings.agent_name,
         "system_prompt": get_runtime("system_prompt") or settings.agent_system_prompt,
-        "model": "gemma-4-E4B-it-GGUF (Q4_K_M)",
+        "model": model or "gemma-4-E4B-it-GGUF (Q4_K_M)",
+        "llm_mode": llm_mode(),
     }

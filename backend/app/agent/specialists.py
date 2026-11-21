@@ -18,7 +18,7 @@ from app.agent import loop as loop_mod
 from app.agent.guardrails import metric_catalog_followup_required, zero_fabrication_ok
 from app.agent.reports import ToolExecution
 from app.agent.tools import build_tool_instructions, execute_tool
-from app.llm.client import max_tool_rounds
+from app.llm.client import default_profile, max_tool_rounds
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ async def run_specialist(
     system_prompt: str,
     allowed: set[str] | None,
     user_message: str,
-    profile: str = "local",
+    profile: str | None = None,
     emit: EventSink | None = None,
     task_name: str = "",
     context: str = "",
@@ -140,6 +140,7 @@ async def run_specialist(
     max_rounds: int | None = None,
 ) -> SpecialistResult:
     """Run one scoped tool loop and return its evidence package."""
+    profile = profile or default_profile()
     task_name = task_name or f"{agent_id}.collect"
     result = SpecialistResult(agent_id=agent_id, text="", profile=profile)
     await emit_step(emit, agent_id, task_name, "started")

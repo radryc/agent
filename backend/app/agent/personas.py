@@ -5,8 +5,13 @@ from dataclasses import dataclass
 
 from app.config import get_runtime, settings
 from app.llm.client import (
+    default_profile,
+    external_only,
+    external_profile,
     fallback_ready,
+    hybrid_enabled,
     profile_available,
+    profile_config,
     profile_label,
     provider_profiles,
 )
@@ -243,17 +248,28 @@ class EngineStatus:
 
 
 def _local_engine() -> EngineStatus:
-    model = str(get_runtime("llm_model") or settings.llm_model)
-    base_url = str(get_runtime("llm_base_url") or settings.llm_base_url).strip()
-    detail = f"OpenAI-compatible endpoint at {base_url}"
-    if fallback_ready():
-        detail += f"; hybrid escalation to {profile_label('fallback')}"
-    return EngineStatus(
-        "local",
-        f"Model ({model})",
-        True,
-        detail,
-    )
+    """Engine status for the agent's active (non-Steve-specific) profile.
+
+    Despite the historical name this is the *default* profile: in
+    ``external`` mode it is the external provider, not the in-cluster model.
+    """
+    active = default_profile()
+    try:
+        config = profile_config(active)
+        label = str(config.get("label") or active)
+        base_url = str(config.get("base_url") or "").strip()
+    except ValueError:
+        label = "Model (misconfigured external provider)"
+        base_url = ""
+    if external_only():
+        detail = f"External-only mode; OpenAI-compatible API at {base_url}"
+        available = profile_available(active)
+    else:
+        detail = f"OpenAI-compatible endpoint at {base_url}"
+        if hybrid_enabled() and fallback_ready():
+            detail += f"; hybrid escalation to {profile_label(external_profile())}"
+        available = True
+    return EngineStatus("local", label, available, detail)
 
 
 def _deepseek_engine() -> EngineStatus:
@@ -337,4 +353,6 @@ def engine_profile(engine_id: str) -> str:
         return "steve"
     if engine_id.startswith("provider:"):
         return engine_id
-    return "local"
+    # "local" is the default profile and follows LLM_MODE, so an external-only
+    # deployment still never reaches the in-cluster model.
+    return default_profile()

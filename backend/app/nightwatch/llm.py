@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from app.config import settings
-from app.llm.client import chat_completion
+from app.llm.client import chat_completion, default_profile
 from app.nightwatch.actions import ALLOWED_RECOMMENDATIONS
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ async def assess(pack: dict[str, Any]) -> dict[str, Any]:
             temperature=0.1,
             max_tokens=900,
             stream=False,
-            profile=settings.nightwatch_llm_profile or "local",
+            profile=settings.nightwatch_llm_profile or default_profile(),
         )
     except Exception as exc:  # pragma: no cover - provider failure path
         logger.warning("Nightwatch LLM call failed: %s", exc)

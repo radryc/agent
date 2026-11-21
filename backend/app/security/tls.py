@@ -95,6 +95,30 @@ def _is_file(path: str) -> bool:
         return False
 
 
+_VERIFY_CONTEXT_CACHE: dict[tuple[str, int], ssl.SSLContext] = {}
+
+
+def _verify_context(ca_file: str) -> ssl.SSLContext:
+    """Return a client context that trusts the default roots *and* ``ca_file``.
+
+    ``ssl.create_default_context()`` loads the system trust store and
+    ``load_verify_locations`` adds the Strata CA on top.  Using the Strata CA as
+    a replacement bundle breaks every publicly signed endpoint (for example an
+    external LLM API) with ``unable to get local issuer certificate``.
+    """
+    path = Path(ca_file).expanduser()
+    stat = path.stat()
+    cache_key = (str(path), stat.st_mtime_ns)
+    context = _VERIFY_CONTEXT_CACHE.get(cache_key)
+    if context is None:
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=str(path))
+        # Rotation replaces the cached context instead of accumulating stale ones.
+        _VERIFY_CONTEXT_CACHE.clear()
+        _VERIFY_CONTEXT_CACHE[cache_key] = context
+    return context
+
+
 def _path_value(env: Mapping[str, object], key: str, default: str) -> str:
     raw = _env_value(env, key)
     if not raw:
@@ -237,16 +261,18 @@ def http_verify(
     settings: TLSSettings | None = None,
     *,
     env: Mapping[str, object] | None = None,
-) -> bool | str:
+) -> bool | ssl.SSLContext:
     """Return the ``httpx`` ``verify`` value for outbound service calls.
 
-    A configured CA bundle becomes the verification source.  Without one the
-    default trust store is kept, which also preserves plaintext behavior when
-    TLS is off (the value is unused for ``http://`` URLs).
+    A configured CA bundle *augments* the default trust store rather than
+    replacing it, so public endpoints keep validating when the internal CA is
+    mounted.  Without one the default trust store is kept, which also preserves
+    plaintext behavior when TLS is off (the value is unused for ``http://``
+    URLs).
     """
     cfg = settings or load_tls_settings(env)
     if cfg.ca_file and _is_file(cfg.ca_file):
-        return cfg.ca_file
+        return _verify_context(cfg.ca_file)
     return True
 
 
@@ -254,12 +280,15 @@ def httpx_client_kwargs(
     settings: TLSSettings | None = None,
     *,
     env: Mapping[str, object] | None = None,
+    include_client_cert: bool = True,
 ) -> dict[str, object]:
     """Keyword arguments for internal ``httpx`` clients.
 
     TLS is left untouched in ``off`` mode so existing plaintext deployments are
-    unchanged.  When TLS is configured, the CA bundle is used for verification
-    and the service certificate is presented for outbound mTLS.
+    unchanged.  When TLS is configured, the CA bundle augments the default trust
+    store for verification and the service certificate is presented for
+    outbound mTLS.  Pass ``include_client_cert=False`` for external endpoints:
+    the platform identity must not be offered to third-party hosts.
     """
     cfg = settings or load_tls_settings(env)
     if cfg.mode == MODE_OFF:
@@ -269,7 +298,7 @@ def httpx_client_kwargs(
     verify = http_verify(cfg)
     if verify is not True:
         kwargs["verify"] = verify
-    client_cert = cfg.client_cert_pair()
+    client_cert = cfg.client_cert_pair() if include_client_cert else None
     if client_cert is not None:
         kwargs["cert"] = client_cert
     return kwargs

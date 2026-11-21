@@ -59,7 +59,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 COPY app/ ./app/
 
-RUN mkdir -p /data /workspace
+# FUSE mountpoint for the MonoFS workspace. It must exist and be owned by the
+# non-root container user, otherwise monofs-client cannot mount into it.
+RUN mkdir -p /data /workspace /monofs
 
 RUN mkdir -p /etc && \
     touch /etc/fuse.conf && \
@@ -67,7 +69,7 @@ RUN mkdir -p /etc && \
     ln -sf /proc/self/mounts /etc/mtab
 
 RUN useradd -m -s /bin/bash developer && \
-    chown -R developer:developer /app /data /workspace
+    chown -R developer:developer /app /data /workspace /monofs
 
 USER developer
 

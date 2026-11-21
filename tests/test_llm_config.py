@@ -159,6 +159,95 @@ class ExternalLLMDefaultsTest(unittest.TestCase):
         self.assertIn("AGENT_STEVE_LLM_BASE_URL", engine.detail)
 
 
+class LLMModeTest(unittest.TestCase):
+    def setUp(self):
+        self._saved = dict(config._runtime_overrides)
+
+    def tearDown(self):
+        config._runtime_overrides.clear()
+        config._runtime_overrides.update(self._saved)
+
+    def _external(self, **overrides):
+        values = {
+            "llm_mode": "external",
+            "llm_fallback_base_url": "https://api.example.com",
+            "llm_fallback_model": "example-large",
+            "llm_fallback_api_key": "test-key",
+            "llm_fallback_provider": "",
+        }
+        values.update(overrides)
+        config._runtime_overrides.update(values)
+
+    def test_default_mode_is_local(self):
+        config._runtime_overrides.pop("llm_mode", None)
+        config._runtime_overrides["llm_hybrid_enabled"] = False
+        self.assertEqual(client.llm_mode(), "local")
+        self.assertEqual(client.default_profile(), "local")
+        self.assertFalse(client.external_only())
+        self.assertFalse(client.hybrid_enabled())
+
+    def test_legacy_hybrid_boolean_maps_to_hybrid_mode(self):
+        config._runtime_overrides.pop("llm_mode", None)
+        config._runtime_overrides["llm_hybrid_enabled"] = True
+        self.assertEqual(client.llm_mode(), "hybrid")
+        self.assertEqual(client.default_profile(), "local")
+
+    def test_unknown_mode_falls_back_to_local(self):
+        config._runtime_overrides["llm_mode"] = "cloud"
+        self.assertEqual(client.llm_mode(), "local")
+
+    def test_external_mode_only_uses_external_provider(self):
+        self._external()
+        self.assertEqual(client.llm_mode(), "external")
+        self.assertTrue(client.external_only())
+        self.assertEqual(client.default_profile(), "fallback")
+        self.assertTrue(client.fallback_ready())
+        self.assertFalse(client.hybrid_enabled())
+        self.assertFalse(client.profile_available("local"))
+
+        # A stray request for "local" is redirected to the external provider.
+        profile = client._profile_config("local")
+        self.assertEqual(profile["base_url"], "https://api.example.com")
+        self.assertEqual(profile["model"], "example-large")
+        self.assertFalse(profile["supports_grammar"])
+
+    def test_external_mode_honours_named_provider(self):
+        config._runtime_overrides.update(
+            {
+                "llm_mode": "external",
+                "llm_providers_json": json.dumps(
+                    {
+                        "qwen": {
+                            "base_url": "https://qwen.example",
+                            "model": "qwen3.5-plus",
+                            "api_key": "k",
+                        }
+                    }
+                ),
+                "llm_fallback_provider": "qwen",
+            }
+        )
+        self.assertEqual(client.default_profile(), "provider:qwen")
+        self.assertTrue(client.fallback_ready())
+        self.assertEqual(
+            client._profile_config("local")["base_url"], "https://qwen.example"
+        )
+
+    def test_external_mode_without_provider_is_not_ready(self):
+        config._runtime_overrides.update(
+            {
+                "llm_mode": "external",
+                "llm_fallback_base_url": "",
+                "llm_fallback_provider": "",
+            }
+        )
+        self.assertFalse(client.fallback_ready())
+
+    def test_engine_profile_follows_mode(self):
+        self._external()
+        self.assertEqual(personas.engine_profile("local"), "fallback")
+
+
 class GrammarTest(unittest.TestCase):
     def test_grammar_requires_tool_key(self):
         self.assertIn("root ::=", TOOL_CALL_GRAMMAR)

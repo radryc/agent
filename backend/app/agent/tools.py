@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import math
@@ -2493,13 +2494,22 @@ async def _tool_doctor_graph_validate(args: dict) -> str:
         if content is not None and str(content).strip():
             document = graph_validation.parse_text(str(content), fmt)
         elif path:
-            target = Path(path).expanduser()
-            if not target.is_absolute():
-                target = workspace_tools.mount_root() / target
-            if not target.is_file():
-                return f"Error: graph file not found: {target}"
-            label = str(target)
-            document = graph_validation.load_document(target)
+            if workspace_tools.headless_active() and not Path(path).is_absolute():
+                try:
+                    response = await workspace_tools._socket_fs_call("read", path=path)
+                    data = base64.b64decode(response.get("content") or b"")
+                    document = graph_validation.parse_text(data.decode("utf-8"), fmt)
+                    label = path
+                except Exception as exc:
+                    return f"Error: graph file not found: {path} ({exc})"
+            else:
+                target = Path(path).expanduser()
+                if not target.is_absolute():
+                    target = workspace_tools.mount_root() / target
+                if not target.is_file():
+                    return f"Error: graph file not found: {target}"
+                label = str(target)
+                document = graph_validation.load_document(target)
         else:
             return "Error: provide path=<workspace file> or content=<JSON/YAML>"
     except Exception as exc:
@@ -3048,7 +3058,7 @@ register(Skill(
 
 register(Skill(
     name="workspace_status", category="workspace",
-    description="Show the MonoFS writable workspace state: mount path, router, session socket, pending changes, staged files, unpushed commits. Start here before editing code.",
+    description="Show the MonoFS writable workspace state: mount path (or headless socket), router, session socket, pending changes, staged files, unpushed commits. Start here before editing code.",
     parameters={},
     status_prefix="Checking MonoFS workspace",
     handler=workspace_tools.workspace_status,
@@ -3056,7 +3066,7 @@ register(Skill(
 
 register(Skill(
     name="workspace_list", category="workspace",
-    description="List files and directories in the MonoFS workspace. Paths are relative to the mount root (e.g. 'monofs/internal/fuse').",
+    description="List files and directories in the MonoFS workspace. Paths are relative to the workspace root (e.g. 'monofs/internal/fuse').",
     parameters={"path": "Directory path relative to the workspace root (default '.')"},
     status_prefix="Listing workspace files",
     handler=workspace_tools.workspace_list,

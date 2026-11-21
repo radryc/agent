@@ -47,7 +47,7 @@ from app.agent.reports import (
 from app.agent.specialists import emit_step, run_specialist
 from app.agent.tools import execute_tool, get_skill
 from app.config import get_runtime, runtime_bool, settings
-from app.llm.client import fallback_ready
+from app.llm.client import default_profile, external_profile, fallback_ready
 
 logger = logging.getLogger(__name__)
 
@@ -873,7 +873,11 @@ async def _synthesize_verdict(
         specialist_briefs=specialist_briefs,
         incident_window=incident_window,
     )
-    profile = profile or ("fallback" if fallback_ready() else "local")
+    # Synthesis prefers the external provider whenever one is configured
+    # (hybrid and external modes); local-only deployments stay local.
+    profile = profile or (
+        external_profile() if fallback_ready() else default_profile()
+    )
     messages = [
         {"role": "system", "content": OTTO_PROMPT},
         {
@@ -1157,7 +1161,7 @@ async def _run_diagnostic(
         system_prompt=TELEMETRY_PROMPT,
         allowed=TELEMETRY_TOOLS,
         user_message=scoped_message,
-        profile="local",
+        profile=profile,
         emit=emit,
         task_name="telemetry_hound.collect",
         context=context,
@@ -1170,7 +1174,7 @@ async def _run_diagnostic(
         system_prompt=TOPOLOGY_PROMPT,
         allowed=TOPOLOGY_TOOLS,
         user_message=scoped_message,
-        profile="local",
+        profile=profile,
         emit=emit,
         task_name="topology_auditor.audit",
         context=context,
@@ -1485,11 +1489,12 @@ async def run_turn(
     session_id: str,
     *,
     persona_id: str = "otto",
-    profile: str = "local",
+    profile: str | None = None,
     emit: EventSink | None = None,
     force_route: str | None = None,
 ) -> str:
     """Run one interactive turn through the deterministic flow."""
+    profile = profile or default_profile()
     if not runtime_bool("agent_flow_enabled", default=True):
         return await _legacy_turn(
             user_message,

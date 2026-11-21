@@ -20,9 +20,10 @@ from app.agent.personas import (
 )
 from app.agent.router import resolve_persona, strip_mention
 from app.agent import session as session_mgr
-from app.agent.workspace import mount_active, mount_root
+from app.agent.workspace import fuse_mount_active, mount_root
 from app.auth.api_auth import require_api_auth, require_ws_auth
 from app.config import settings
+from app.llm.client import default_profile
 from app.terminal.exec import execute_command, get_terminal_manager
 from app.models.schemas import ChatRequest
 
@@ -266,7 +267,13 @@ async def _handle_agent_message(
     processed = strip_mention(user_message) or user_message
 
     if persona.id != "steve":
-        await _stream_local(send_json, processed, session_id, persona_id=persona.id, profile="local")
+        await _stream_local(
+            send_json,
+            processed,
+            session_id,
+            persona_id=persona.id,
+            profile=default_profile(),
+        )
         return
 
     # Steve: dispatch to the resolved coding engine.
@@ -284,7 +291,13 @@ async def _handle_agent_message(
                 "session_id": session_id,
             }
         )
-        await _stream_local(send_json, processed, session_id, persona_id="steve", profile="local")
+        await _stream_local(
+            send_json,
+            processed,
+            session_id,
+            persona_id="steve",
+            profile=default_profile(),
+        )
         return
 
     profile = engine_profile(engine.id)
@@ -297,13 +310,13 @@ async def _stream_local(
     session_id: str,
     *,
     persona_id: str = DEFAULT_PERSONA_ID,
-    profile: str = "local",
+    profile: str | None = None,
 ):
     await run_turn(
         user_message,
         session_id,
         persona_id=persona_id,
-        profile=profile,
+        profile=profile or default_profile(),
         emit=send_json,
     )
     await send_json({"type": "done", "session_id": session_id})
@@ -314,7 +327,7 @@ async def _stream_opencode(send_json, user_message: str, session_id: str):
         await _stream_local(send_json, user_message, session_id, persona_id="steve")
         return
 
-    cwd = str(mount_root()) if mount_active() else None
+    cwd = str(mount_root()) if fuse_mount_active() else None
     async for chunk in run_opencode(
         user_message,
         session_id,
