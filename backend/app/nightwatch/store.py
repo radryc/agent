@@ -551,6 +551,7 @@ class NightwatchStore:
         *,
         since: datetime | None = None,
         partition: str | None = None,
+        allowed_partitions: set[str] | None = None,
         limit: int = 100,
     ) -> list[dict]:
         async with self._session() as db:
@@ -564,6 +565,8 @@ class NightwatchStore:
                 query = query.where(EventRow.ts >= since)
             if partition:
                 query = query.where(IncidentRow.partition == partition)
+            if allowed_partitions is not None:
+                query = query.where(IncidentRow.partition.in_(allowed_partitions))
             result = await db.execute(query)
             return [
                 {
@@ -575,11 +578,20 @@ class NightwatchStore:
                 for event, incident in result.all()
             ]
 
-    async def brief(self, since: datetime | None = None, user_subject: str = "") -> dict:
+    async def brief(
+        self,
+        since: datetime | None = None,
+        user_subject: str = "",
+        allowed_partitions: set[str] | None = None,
+    ) -> dict:
         async with self._session() as db:
             incidents_query = select(IncidentRow).order_by(IncidentRow.updated_at.desc())
             if since:
                 incidents_query = incidents_query.where(IncidentRow.updated_at >= since)
+            if allowed_partitions is not None:
+                incidents_query = incidents_query.where(
+                    IncidentRow.partition.in_(allowed_partitions)
+                )
             incidents = (await db.execute(incidents_query)).scalars().all()
 
             events_query = select(EventRow, IncidentRow).join(
@@ -587,6 +599,10 @@ class NightwatchStore:
             )
             if since:
                 events_query = events_query.where(EventRow.ts >= since)
+            if allowed_partitions is not None:
+                events_query = events_query.where(
+                    IncidentRow.partition.in_(allowed_partitions)
+                )
             events_query = events_query.order_by(EventRow.ts.desc()).limit(25)
             events = (await db.execute(events_query)).all()
 

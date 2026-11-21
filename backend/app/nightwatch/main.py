@@ -38,7 +38,6 @@ async def lifespan(app: FastAPI):
 
     store = NightwatchStore(settings.nightwatch_db_url)
     await store.init()
-    configure(store)
 
     guardian = GuardianClient(settings.guardian_url)
     doctor = DoctorClient(
@@ -56,6 +55,7 @@ async def lifespan(app: FastAPI):
         ),
     )
     worker = NightwatchWorker(store, guardian, doctor, investigator)
+    configure(store, investigator)
 
     task: asyncio.Task | None = None
     if state.enabled:

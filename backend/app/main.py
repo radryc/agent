@@ -10,10 +10,11 @@ from app.agent.session import init_db, close_db
 from app.auth.oidc import oidc
 from app.llm.client import close_client
 from app.telemetry.otel import init_telemetry, instrument_app
-from app.config import load_runtime_settings
+from app.telemetry.metrics import MetricsMiddleware
+from app.config import load_runtime_settings, settings
 from app.api.chat import router as chat_router
 from app.api.sessions import router as sessions_router
-from app.api.health import router as health_router
+from app.api.health import router as health_router, start_llm_health_refresher, stop_llm_health_refresher
 from app.api.settings import router as settings_router
 from app.api.auth import router as auth_router
 from app.api.guardian import router as guardian_router
@@ -53,9 +54,11 @@ async def lifespan(app: FastAPI):
         logger.exception("OIDC authentication failed during startup")
     await init_db()
     await get_terminal_manager().start()
+    start_llm_health_refresher()
     logger.info("lagent backend ready")
     yield
     logger.info("Shutting down lagent backend...")
+    await stop_llm_health_refresher()
     await get_terminal_manager().stop()
     await close_client()
     await close_db()
@@ -68,13 +71,24 @@ app = FastAPI(title="lagent", version="0.1.0", lifespan=lifespan)
 init_telemetry()
 instrument_app(app)
 
+def _cors_settings(origins: list[str] | str | None) -> tuple[list[str], bool]:
+    """Return (allowed_origins, allow_credentials); wildcard disables credentials."""
+    if isinstance(origins, str):
+        parsed = [o.strip() for o in origins.split(",") if o.strip()]
+    else:
+        parsed = [str(o).strip() for o in (origins or []) if str(o).strip()]
+    return parsed, "*" not in parsed
+
+
+_cors_origins, _cors_allow_credentials = _cors_settings(settings.cors_allowed_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(MetricsMiddleware)
 
 app.include_router(chat_router)
 app.include_router(sessions_router)

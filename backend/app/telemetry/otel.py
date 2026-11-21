@@ -12,6 +12,13 @@ _tracer_provider = None
 _meter_provider = None
 
 
+def resolve_otlp_insecure(endpoint: str, override: bool | None) -> bool:
+    """Default OTLP security from the endpoint scheme unless explicitly set."""
+    if override is not None:
+        return bool(override)
+    return not str(endpoint or "").strip().lower().startswith("https://")
+
+
 def init_telemetry(component: str = "lagent-backend") -> None:
     global _initialized, _tracer_provider, _meter_provider
     if _initialized or not settings.otel_enabled:
@@ -39,17 +46,21 @@ def init_telemetry(component: str = "lagent-backend") -> None:
             }
         )
 
+        insecure = resolve_otlp_insecure(
+            settings.otel_exporter_otlp_endpoint,
+            settings.otel_exporter_otlp_insecure,
+        )
         tracer_provider = TracerProvider(resource=resource)
         trace_exporter = OTLPSpanExporter(
             endpoint=settings.otel_exporter_otlp_endpoint,
-            insecure=settings.otel_exporter_otlp_insecure,
+            insecure=insecure,
         )
         tracer_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
         trace.set_tracer_provider(tracer_provider)
 
         metric_exporter = OTLPMetricExporter(
             endpoint=settings.otel_exporter_otlp_endpoint,
-            insecure=settings.otel_exporter_otlp_insecure,
+            insecure=insecure,
         )
         metric_reader = PeriodicExportingMetricReader(
             metric_exporter,

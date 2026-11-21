@@ -1,5 +1,8 @@
+import asyncio
+import json
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -273,7 +276,9 @@ class FlowRouteTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(sre_flow, "execute_tool", fake_execute), patch.object(
             sre_flow.session_mgr, "add_message", AsyncMock()
         ):
-            result = await sre_flow.resolve_approval(approval[0]["id"], True)
+            result = await sre_flow.resolve_approval(
+                approval[0]["id"], True, session_id="session-1"
+            )
         self.assertTrue(result["approved"])
         self.assertEqual(executed[0][0], "guardian_reconcile")
         self.assertTrue(executed[0][1]["confirm"])
@@ -327,6 +332,89 @@ class GoldenSignalTest(unittest.TestCase):
         text = format_golden_signals(coverage)
         self.assertIn("2/4 golden signals covered", text)
         self.assertIn("**Latency**: **gap**", text)
+
+    def test_long_http_server_request_queries_count_as_coverage(self):
+        # Regression: evidence.query is truncated for display, which cut off
+        # the closing quote of long PromQL and made executed signals look
+        # unqueried. Coverage must come from the full metrics_queried labels.
+        queries = [
+            (
+                'sum(rate(http_server_request_duration_count'
+                '{guardian_partition="divb-shared"}[5m]))'
+            ),
+            (
+                'sum(rate(http_server_request_duration_count'
+                '{guardian_partition="divb-shared",'
+                'http_response_status_code=~"5.."}[5m]))'
+            ),
+            (
+                "max by (k8s_pod_name) (k8s_top_pod_cpu_usage_millicores"
+                '{k8s_namespace_name="div-demo"})'
+            ),
+        ]
+        report = TelemetryReport(partition="divb-shared", metrics_queried=queries)
+        coverage = analyze_golden_signals(report)
+        by_signal = {item.signal: item for item in coverage}
+        self.assertTrue(by_signal["traffic"].covered)
+        self.assertTrue(by_signal["errors"].covered)
+        self.assertTrue(by_signal["saturation"].covered)
+        # A request counter is traffic, not latency; only histograms/buckets
+        # (or trace durations) count as latency coverage.
+        self.assertFalse(by_signal["latency"].covered)
+
+
+class VerdictRenderingTest(unittest.TestCase):
+    def test_truncated_json_does_not_echo_raw_json(self):
+        base = IncidentVerdict(
+            summary="fallback summary",
+            root_cause_partition="divb-shared",
+            root_cause_service="processor",
+            confidence=0.3,
+        )
+        raw = (
+            '{"summary": "recovered summary", "root_cause_partition": '
+            '"divb-shared", "root_cause_service": "processor", "rationale": '
+            '"because the evidence is thin"'
+        )
+        verdict = sre_flow._merge_verdict(base, None, raw)
+        self.assertEqual(verdict.summary, "recovered summary")
+        self.assertEqual(verdict.rationale, "because the evidence is thin")
+        self.assertFalse(verdict.otto_response.strip().startswith("{"))
+
+    def test_unparseable_json_keeps_fallback_text(self):
+        base = IncidentVerdict(
+            summary="fallback summary",
+            root_cause_partition="monofs",
+            root_cause_service="router",
+            confidence=0.2,
+        )
+        verdict = sre_flow._merge_verdict(base, None, '{"summary": "broken')
+        self.assertEqual(verdict.otto_response, "")
+        rendered = sre_flow._render_verdict_markdown(verdict)
+        self.assertIn("fallback summary", rendered)
+        self.assertIn("**Root cause**", rendered)
+        self.assertNotIn('{"summary"', rendered)
+
+    def test_render_includes_action_and_confidence(self):
+        verdict = IncidentVerdict(
+            summary="demo alert",
+            root_cause_partition="divb-shared",
+            root_cause_service="processor",
+            confidence=0.35,
+            recommended_action="escalate",
+            recommendation_target="platform",
+            escalate=True,
+            escalation_target="platform-oncall",
+            escalation_reason="trace backend timing out",
+            rationale="no failing spans",
+            falsification="real errors appear",
+        )
+        rendered = sre_flow._render_verdict_markdown(verdict)
+        self.assertIn("demo alert", rendered)
+        self.assertIn("35%", rendered)
+        self.assertIn("`escalate`", rendered)
+        self.assertIn("platform-oncall", rendered)
+        self.assertIn("What would prove this wrong", rendered)
 
 
 class SpecialistTest(unittest.IsolatedAsyncioTestCase):
@@ -429,6 +517,219 @@ class NightwatchBridgeTest(unittest.TestCase):
         )
         payload = _assessment(verdict, self._pack())
         self.assertEqual(payload["recommended_action"], "notify")
+
+
+class IncidentWindowTest(unittest.TestCase):
+    def _runtime(self, **overrides):
+        values = {
+            "triage_lookback_minutes": 30,
+            "triage_max_window_minutes": 120,
+            **overrides,
+        }
+        return lambda key: values.get(key)
+
+    def test_uses_alert_started_timestamp(self):
+        now = datetime(2026, 11, 12, 8, 24, 30, tzinfo=timezone.utc)
+        with patch.object(sre_flow, "get_runtime", self._runtime()):
+            start, end = sre_flow._incident_window(
+                "Alert\nStarted: 2026-11-12T08:23:48.894440026Z\nStatus: firing",
+                now=now,
+            )
+        self.assertEqual(end, now)
+        # A 5-minute pre-roll keeps the trigger that precedes the alert inside
+        # the query window.
+        self.assertEqual(
+            start,
+            datetime(2026, 11, 12, 8, 18, 48, 894440, tzinfo=timezone.utc),
+        )
+
+    def test_defaults_to_bounded_lookback(self):
+        now = datetime(2026, 11, 12, 8, 24, 30, tzinfo=timezone.utc)
+        with patch.object(sre_flow, "get_runtime", self._runtime()):
+            start, end = sre_flow._incident_window("check partition=doctor", now=now)
+        self.assertEqual(end, now)
+        self.assertEqual(end - start, timedelta(minutes=30))
+
+    def test_old_alert_is_clamped_to_max_window(self):
+        now = datetime(2026, 11, 12, 8, 24, 30, tzinfo=timezone.utc)
+        with patch.object(sre_flow, "get_runtime", self._runtime(triage_max_window_minutes=60)):
+            start, _ = sre_flow._incident_window(
+                "Started: 2026-11-10T00:00:00Z", now=now
+            )
+        self.assertEqual(now - start, timedelta(minutes=60))
+
+    def test_triage_specs_are_incident_scoped_and_small(self):
+        start = datetime(2026, 11, 12, 8, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 11, 12, 8, 30, tzinfo=timezone.utc)
+        specs = sre_flow._triage_telemetry_specs("doctor", start, end)
+        names = [name for name, _ in specs]
+        # The duplicate broad log scan is gone; the LogQL body filter covers it.
+        self.assertNotIn("doctor_logs_search", names)
+        self.assertIn("doctor_logql_query", names)
+        trace_spec = next(args for name, args in specs if name == "doctor_traces_recent")
+        self.assertEqual(trace_spec["limit"], 10)
+        self.assertEqual(trace_spec["from"], "2026-11-12T08:00:00Z")
+        self.assertEqual(trace_spec["to"], "2026-11-12T08:30:00Z")
+        log_spec = next(args for name, args in specs if name == "doctor_logql_query")
+        self.assertEqual(log_spec["start"], "2026-11-12T08:00:00Z")
+        self.assertEqual(log_spec["end"], "2026-11-12T08:30:00Z")
+        self.assertLessEqual(log_spec["limit"], 50)
+
+    def test_topology_specs_bound_event_analysis(self):
+        specs = sre_flow._triage_topology_specs("doctor")
+        event_spec = next(args for name, args in specs if name == "doctor_event_analysis")
+        self.assertLessEqual(event_spec["limit"], 50)
+
+
+class EvidenceConcurrencyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_parallel_queries_are_bounded(self):
+        in_flight = 0
+        peak = 0
+
+        async def fake_execute(_name, _args, allowed=None):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                await asyncio.sleep(0.01)
+                return '{"returned": 0, "results": []}'
+            finally:
+                in_flight -= 1
+
+        specs = [("doctor_metrics_query", {"promql": f"m{i}"}) for i in range(8)]
+        with patch.object(sre_flow, "get_runtime", lambda key: 3), patch.object(
+            sre_flow, "execute_tool", fake_execute
+        ):
+            evidence = await sre_flow._collect_tool_evidence(
+                agent_id="telemetry_hound",
+                task_name="telemetry_hound.verify",
+                specs=specs,
+                allowed=sre_flow.TELEMETRY_TOOLS,
+                emit=None,
+            )
+        self.assertEqual(len(evidence), 8)
+        self.assertLessEqual(peak, 3)
+
+
+class SynthesisPayloadTest(unittest.TestCase):
+    def test_specialist_briefs_and_topology_events_survive_budget(self):
+        telemetry = TelemetryReport(
+            partition="doctor",
+            metrics_queried=[f"metric_{i}" for i in range(30)],
+            evidence=[
+                EvidenceRecord(
+                    kind="metric",
+                    source="doctor",
+                    query=f"metric_{i}",
+                    result_summary="x" * 380,
+                )
+                for i in range(40)
+            ],
+        )
+        topology = TopologyReport(
+            partition="doctor",
+            health_status="failing",
+            recent_events=[
+                "doctor_event_analysis: 2026-11-12T08:23:43Z | doctor | intent=query | "
+                "APPLY failed: Deployment invalid: env[4].valueFrom may not be "
+                "specified when value is not empty"
+            ],
+        )
+        payload = sre_flow._synthesis_payload(
+            message="triage doctor",
+            partition="doctor",
+            telemetry=telemetry,
+            topology=topology,
+            golden_signals=[],
+            specialist_briefs={
+                "telemetry_hound": "no error logs in window",
+                "topology_auditor": "APPLY failed on env[4] and env[5]",
+            },
+            incident_window=(
+                datetime(2026, 11, 12, 8, 0, tzinfo=timezone.utc),
+                datetime(2026, 11, 12, 8, 30, tzinfo=timezone.utc),
+            ),
+        )
+        self.assertIn("APPLY failed", payload["specialist_briefs"]["topology_auditor"])
+        self.assertTrue(
+            any("APPLY failed" in item for item in payload["topology"]["recent_events"])
+        )
+        self.assertEqual(payload["incident_window"]["start"], "2026-11-12T08:00:00Z")
+        self.assertLessEqual(
+            len(json.dumps(payload, default=str)), sre_flow._SYNTHESIS_MAX_CHARS
+        )
+
+
+class EvidenceOrderingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_otto_synthesizes_only_after_all_specialists(self):
+        order: list[str] = []
+
+        async def fake_specialist(**kwargs):
+            order.append(f"specialist:{kwargs['agent_id']}")
+            return specialists.SpecialistResult(
+                agent_id=kwargs["agent_id"],
+                text=f"{kwargs['agent_id']} brief",
+            )
+
+        async def fake_collect(**kwargs):
+            order.append(f"collect:{kwargs['agent_id']}")
+            return []
+
+        async def fake_synthesize(**kwargs):
+            order.append("synthesize")
+            self.assertEqual(
+                kwargs["specialist_briefs"]["topology_auditor"],
+                "topology_auditor brief",
+            )
+            return IncidentVerdict(
+                summary="ok",
+                root_cause_partition="doctor",
+                root_cause_service="query",
+            )
+
+        with patch.object(sre_flow, "run_specialist", fake_specialist), patch.object(
+            sre_flow, "_collect_tool_evidence", fake_collect
+        ), patch.object(sre_flow, "_synthesize_verdict", fake_synthesize):
+            await sre_flow._run_diagnostic(
+                message="triage partition=doctor",
+                session_id="s",
+                profile="local",
+                emit=None,
+                context="",
+            )
+
+        self.assertEqual(order[-1], "synthesize")
+        self.assertIn("specialist:telemetry_hound", order)
+        self.assertIn("specialist:topology_auditor", order)
+        self.assertIn("collect:telemetry_hound", order)
+        self.assertIn("collect:topology_auditor", order)
+        self.assertLess(
+            max(order.index(name) for name in order if name.startswith("specialist:")),
+            order.index("synthesize"),
+        )
+
+
+class TopologyEventReportTest(unittest.TestCase):
+    def test_event_analysis_failure_lines_and_health(self):
+        executions = [
+            ToolExecution(
+                name="doctor_event_analysis",
+                args={"partition": "doctor"},
+                result=(
+                    "Analyzed 50 Guardian events from Doctor for partition `doctor`.\n"
+                    "Outcome counts: failure=2, success=48, unknown=0.\n"
+                    "Recent failure signals:\n"
+                    "- 2026-11-12T08:23:43Z | doctor | intent=query | "
+                    'APPLY failed: Deployment.apps "doctor-query" is invalid: '
+                    "env[4].valueFrom may not be specified when `value` is not empty\n"
+                ),
+            )
+        ]
+        report = build_topology_report("doctor", executions)
+        self.assertEqual(report.health_status, "failing")
+        self.assertTrue(
+            any("APPLY failed" in item and "env[4]" in item for item in report.recent_events)
+        )
 
 
 if __name__ == "__main__":

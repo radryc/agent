@@ -100,6 +100,8 @@ export default function SettingsPage() {
     try {
       const payload: Partial<AgentSettings> = { ...settings };
       delete payload.workspace;
+      delete payload.llm_mode_effective;
+      delete payload.llm_profile;
       if (!payload.llm_api_key?.trim()) {
         delete payload.llm_api_key;
       }
@@ -247,6 +249,26 @@ export default function SettingsPage() {
             <Zap size={16} className="text-amber-400" />
             Routing &amp; Reliability
           </h2>
+
+          <div className="space-y-2">
+            <label className="block text-xs text-gray-500 uppercase tracking-wide">
+              LLM mode
+            </label>
+            <select
+              value={settings?.llm_mode || settings?.llm_mode_effective || "local"}
+              onChange={(e) => update("llm_mode", e.target.value)}
+              className="w-full rounded-lg bg-dark-700 border border-dark-600 px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-accent-blue"
+            >
+              <option value="local">Local only — in-cluster model</option>
+              <option value="external">External only — never use the local model</option>
+              <option value="hybrid">Hybrid — local first, escalate to external</option>
+            </select>
+            <p className="text-xs text-gray-600">
+              <code>external</code> routes every turn to the fallback provider below. It requires
+              a configured fallback base URL (or named provider); otherwise the agent reports the
+              LLM as unreachable. Set it in <code>.env</code> with <code>LLM_MODE=external</code>.
+            </p>
+          </div>
 
           <label className="flex items-start gap-3 cursor-pointer">
             <input

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
@@ -17,7 +18,7 @@ from app.agent import loop as loop_mod
 from app.agent.guardrails import metric_catalog_followup_required, zero_fabrication_ok
 from app.agent.reports import ToolExecution
 from app.agent.tools import build_tool_instructions, execute_tool
-from app.llm.client import max_tool_rounds
+from app.llm.client import default_profile, max_tool_rounds
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ async def run_specialist(
     system_prompt: str,
     allowed: set[str] | None,
     user_message: str,
-    profile: str = "local",
+    profile: str | None = None,
     emit: EventSink | None = None,
     task_name: str = "",
     context: str = "",
@@ -139,6 +140,7 @@ async def run_specialist(
     max_rounds: int | None = None,
 ) -> SpecialistResult:
     """Run one scoped tool loop and return its evidence package."""
+    profile = profile or default_profile()
     task_name = task_name or f"{agent_id}.collect"
     result = SpecialistResult(agent_id=agent_id, text="", profile=profile)
     await emit_step(emit, agent_id, task_name, "started")
@@ -153,6 +155,7 @@ async def run_specialist(
     metric_followed = False
     rounds = max_rounds or min(4, max_tool_rounds())
 
+    started = time.perf_counter()
     try:
         for round_num in range(rounds):
             if (
@@ -166,11 +169,20 @@ async def run_specialist(
                     "[%s] Escalating to fallback after %d rounds", agent_id, round_num
                 )
 
+            round_started = time.perf_counter()
             response = await loop_mod._model_round(
                 messages, active_profile, force_grammar=force_grammar
             )
             force_grammar = False
             calls = loop_mod._extract_tool_calls(response)
+            logger.info(
+                "[triage] %s round=%d profile=%s calls=%d elapsed=%dms",
+                agent_id,
+                round_num,
+                active_profile,
+                len(calls),
+                int((time.perf_counter() - round_started) * 1000),
+            )
 
             if not calls:
                 if (
@@ -296,6 +308,13 @@ async def run_specialist(
                 "report.\n\n" + result.text
             )
         result.profile = active_profile
+        logger.info(
+            "[triage] %s complete tools=%d errors=%d elapsed=%dms",
+            agent_id,
+            len(result.executions),
+            len(result.errors),
+            int((time.perf_counter() - started) * 1000),
+        )
         await emit_step(
             emit,
             agent_id,

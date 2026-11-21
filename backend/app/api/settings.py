@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.agent.personas import get_persona
 from app.agent.workspace import workspace_snapshot
+from app.auth.api_auth import require_admin_auth, require_api_auth
 from app.config import get_all_runtime_settings, get_runtime, save_runtime_settings
+from app.llm.client import LLM_MODES, default_profile, llm_mode
 
-router = APIRouter(tags=["settings"])
+router = APIRouter(tags=["settings"], dependencies=[Depends(require_api_auth)])
 
 
 class SettingsPayload(BaseModel):
     system_prompt: str | None = None
+    llm_mode: str | None = None
     llm_model: str | None = None
     gemini_api_key: str | None = None
     llm_providers_json: str | None = None
@@ -54,6 +57,10 @@ class SettingsPayload(BaseModel):
     auto_switch_enabled: bool | None = None
     auto_push_enabled: bool | None = None
     agent_flow_enabled: bool | None = None
+    triage_lookback_minutes: int | None = None
+    triage_preroll_minutes: int | None = None
+    triage_max_window_minutes: int | None = None
+    triage_max_parallel_queries: int | None = None
     monofs_router: str | None = None
     monofs_mount: str | None = None
     monofs_overlay: str | None = None
@@ -70,6 +77,8 @@ def _mask_secret(secret: str) -> str:
 @router.get("/api/settings")
 async def get_settings():
     data = get_all_runtime_settings()
+    data["llm_mode_effective"] = llm_mode()
+    data["llm_profile"] = default_profile()
     # Provider blobs may contain API keys; never echo them back.
     data.pop("llm_providers_json", None)
     data["llm_providers_configured"] = bool(get_runtime("llm_providers_json"))
@@ -119,9 +128,17 @@ async def get_settings():
     return data
 
 
-@router.put("/api/settings")
+@router.put("/api/settings", dependencies=[Depends(require_admin_auth)])
 async def put_settings(payload: SettingsPayload):
     overrides = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "llm_mode" in overrides:
+        mode = str(overrides["llm_mode"] or "").strip().lower()
+        if mode and mode not in LLM_MODES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"llm_mode must be one of: {', '.join(LLM_MODES)}",
+            )
+        overrides["llm_mode"] = mode
     for key in (
         "llm_api_key",
         "llm_fallback_api_key",

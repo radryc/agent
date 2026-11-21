@@ -288,9 +288,23 @@ def _topology_health(executions: list[ToolExecution]) -> str:
                         return "failing"
             if _failure_count(payload) > 0:
                 return "degraded"
-        elif execution.name.startswith("guardian") and any(
-            word in (execution.result or "").lower()
-            for word in ("failing", "crashloop", "degraded")
+            continue
+        # Event summaries and other prose payloads: surface recorded failures
+        # instead of treating "failure=3" as a healthy partition.
+        text = (execution.result or "").lower()
+        counts = re.search(r"\bfailure=(\d+)", text)
+        if counts and int(counts.group(1)) > 0:
+            return "failing"
+        if any(
+            token in text
+            for token in (
+                "failing",
+                "crashloop",
+                "degraded",
+                "apply failed",
+                "failed:",
+                "is invalid",
+            )
         ):
             return "degraded"
     return "healthy" if any(not item.empty for item in executions) else "unknown"
@@ -369,10 +383,23 @@ def build_topology_report(
             "guardian_intent_activity",
             "doctor_event_analysis",
             "doctor_guardian_events",
-        }:
-            entry = f"{execution.name}: {_short(execution.result, 240)}"
-            if not execution.empty:
+        } and not execution.empty:
+            raw = execution.result or ""
+            entry = f"{execution.name}: {_short(raw, 240)}"
+            if entry not in report.recent_events and len(report.recent_events) < 12:
                 report.recent_events.append(entry)
+            # Event summaries are multi-line. The headline is usually counts and
+            # the concrete APPLY/validation error lives further down, so keep
+            # the failure lines explicitly instead of truncating them away.
+            for line in raw.splitlines():
+                if len(report.recent_events) >= 12:
+                    break
+                line = line.strip()
+                if not line or not _ERROR_RE.search(line):
+                    continue
+                detail = f"{execution.name}: {_short(line, 320)}"
+                if detail not in report.recent_events:
+                    report.recent_events.append(detail)
         report.evidence.append(_evidence(execution))
     return report
 

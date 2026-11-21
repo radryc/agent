@@ -153,6 +153,33 @@ class StoreTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(assignments["a"]["enabled"])
         self.assertFalse(assignments["b"]["enabled"])
 
+    async def test_brief_and_activity_partition_scope(self):
+        for partition in ("diva-shared", "divb-shared"):
+            incident = await self.store.create_incident(
+                partition=partition,
+                correlation_key=f"{partition}/svc",
+                title="HighErrorRate",
+                severity="warning",
+            )
+            await self.store.append_event(
+                incident_id=incident["id"],
+                type="alert.firing",
+                summary=f"alert fired in {partition}",
+            )
+        brief = await self.store.brief(allowed_partitions={"diva-shared"})
+        self.assertEqual([p["partition"] for p in brief["partitions"]], ["diva-shared"])
+        self.assertEqual(
+            {i["partition"] for i in brief["incidents"]}, {"diva-shared"}
+        )
+        self.assertEqual(
+            {e["incident_partition"] for e in brief["notable_events"]},
+            {"diva-shared"},
+        )
+        activity = await self.store.activity(allowed_partitions={"divb-shared"})
+        self.assertEqual(
+            {e["incident_partition"] for e in activity}, {"divb-shared"}
+        )
+
     async def test_brief_counts_escalation(self):
         incident = await self.store.create_incident(
             partition="p",
@@ -408,13 +435,16 @@ class WorkerTest(unittest.IsolatedAsyncioTestCase):
 class ProxyTest(unittest.TestCase):
     def setUp(self):
         self._original = settings.nightwatch_url
+        self._original_auth = settings.agent_auth_required
         settings.nightwatch_url = ""
+        settings.agent_auth_required = False
         app = FastAPI()
         app.include_router(nightwatch_proxy_router)
         self.client = TestClient(app)
 
     def tearDown(self):
         settings.nightwatch_url = self._original
+        settings.agent_auth_required = self._original_auth
 
     def test_overview_returns_safe_empty_state(self):
         response = self.client.get("/api/nightwatch/overview")
@@ -458,6 +488,7 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(incidents.json()["incidents"], [])
 
     async def test_brief_returns_counts(self):
+        await self.store.upsert_assignment("p", True)
         await self.store.create_incident(
             partition="p",
             correlation_key="p/svc",
@@ -467,6 +498,35 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         response = self.client.get("/v1/brief")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["counts"]["incidents"], 1)
+
+    async def test_on_demand_investigation_returns_analysis(self):
+        class FakeInvestigator:
+            async def investigate(self, incident, alerts):
+                return InvestigationResult(
+                    summary="checkout errors after deploy",
+                    root_cause_partition="doctor",
+                    root_cause_service="checkout",
+                    confidence=0.8,
+                    recommended_action="rollback",
+                    recommendation_target="doctor/checkout",
+                    rationale="errors began at deploy time",
+                    cross_partition=False,
+                )
+
+        configure(self.store, FakeInvestigator())
+        response = self.client.post(
+            "/v1/investigations",
+            json={
+                "externalRef": "doctor:inc-1",
+                "incident": {"id": "inc-1", "partition": "doctor", "severity": "critical"},
+                "alerts": [{"fingerprint": "fp1", "alertname": "CheckoutDown", "status": "resolved"}],
+                "deadlineSeconds": 10,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["root_cause_service"], "checkout")
+        self.assertEqual(body["recommended_action"], "rollback")
 
 
 if __name__ == "__main__":

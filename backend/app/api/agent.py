@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.agent.opencode import is_opencode_available, list_opencode_models, list_opencode_providers
 from app.agent.personas import list_personas, resolve_engine
 from app.agent.workspace import workspace_snapshot
-from app.llm.client import available_profiles, list_models as list_llm_models
+from app.llm.client import (
+    available_profiles,
+    default_profile,
+    fallback_ready,
+    hybrid_enabled,
+    list_models as list_llm_models,
+    llm_mode,
+    profile_config,
+)
 from app.llm.presets import LLM_MODEL_PRESETS
 from app.config import get_runtime, runtime_bool
+from app.auth.api_auth import require_api_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_auth)])
 
 
 @router.get("/api/agent/status")
@@ -41,6 +50,8 @@ async def agent_status():
     return {
         "personas": personas,
         "workspace": workspace_snapshot(),
+        "llm_mode": llm_mode(),
+        "llm_profile": default_profile(),
         "auto_switch_enabled": runtime_bool("auto_switch_enabled", default=True),
         "auto_push_enabled": runtime_bool("auto_push_enabled", default=False),
         "agent_flow_enabled": runtime_bool("agent_flow_enabled", default=True),
@@ -67,22 +78,33 @@ async def agent_status():
 
 @router.get("/api/agent/models")
 async def agent_models():
-    """Return discoverable models from local LLM and OpenCode server."""
+    """Return discoverable models from the active LLM and OpenCode server."""
+    mode = llm_mode()
+    active = default_profile()
+    try:
+        active_config = profile_config(active)
+    except ValueError:
+        active_config = {
+            "base_url": str(get_runtime("llm_base_url") or ""),
+            "model": str(get_runtime("llm_model") or "gemma-4-E4B-it"),
+        }
     result: dict = {
+        "mode": mode,
+        "default_profile": active,
+        # "local" is the legacy key; it describes the profile turns actually use.
         "local": {
             "provider": "openai-compatible",
-            "base_url": str(get_runtime("llm_base_url") or ""),
-            "current_model": str(get_runtime("llm_model") or "gemma-4-E4B-it"),
+            "base_url": active_config.get("base_url") or "",
+            "current_model": active_config.get("model") or "",
+            "profile": active,
             "models": [],
             "presets": [dict(p) for p in LLM_MODEL_PRESETS],
             "grammar_enabled": runtime_bool("llm_grammar_enabled", default=True),
         },
         "profiles": available_profiles(),
         "hybrid": {
-            "enabled": runtime_bool("llm_hybrid_enabled", default=True),
-            "fallback_ready": any(
-                p["id"] == "fallback" and p["available"] for p in available_profiles()
-            ),
+            "enabled": hybrid_enabled(),
+            "fallback_ready": fallback_ready(),
             "after_rounds": get_runtime("llm_hybrid_after_rounds"),
         },
         "opencode": {
@@ -108,7 +130,7 @@ async def agent_models():
         ],
     }
 
-    llm_models = await list_llm_models()
+    llm_models = await list_llm_models(active)
     if llm_models:
         result["local"]["models"] = [
             {"id": m.get("id", ""), "name": m.get("id", "")}

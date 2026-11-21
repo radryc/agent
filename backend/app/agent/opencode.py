@@ -7,6 +7,7 @@ from typing import AsyncIterator
 import httpx
 
 from app.config import get_runtime
+from app.security.tls import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class OpenCodeAgentService:
             return False
 
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(timeout=3.0, **httpx_client_kwargs()) as client:
                 for path in ("/health", "/api/health", "/"):
                     resp = await client.get(f"{server_url.rstrip('/')}{path}")
                     if resp.status_code < 500:
@@ -77,10 +78,11 @@ class OpenCodeAgentService:
         if cwd:
             working_dir = cwd
         else:
-            # Prefer the writable MonoFS workspace so code edits land in the mount.
-            from app.agent.workspace import mount_active, mount_root
+            # Prefer the writable MonoFS FUSE mount so code edits land there.
+            # Headless workspaces have no real directory to use as a cwd.
+            from app.agent.workspace import fuse_mount_active, mount_root
 
-            working_dir = str(mount_root()) if mount_active() else os.getcwd()
+            working_dir = str(mount_root()) if fuse_mount_active() else os.getcwd()
         resume_id = self._resume_by_session.get(session_id or "")
 
         logger.info(
@@ -145,7 +147,7 @@ async def list_opencode_models() -> list[dict]:
     server_url = _server_url()
     models: list[dict] = []
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0, **httpx_client_kwargs()) as client:
             resp = await client.get(f"{server_url.rstrip('/')}/api/models")
             if resp.status_code == 200:
                 data = resp.json()
@@ -167,7 +169,7 @@ async def list_opencode_providers() -> list[dict]:
     server_url = _server_url()
     providers: list[dict] = []
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0, **httpx_client_kwargs()) as client:
             resp = await client.get(f"{server_url.rstrip('/')}/api/providers")
             if resp.status_code == 200:
                 data = resp.json()

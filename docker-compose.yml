@@ -60,6 +60,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      # local (default) | external | hybrid. "external" makes every LLM call
+      # go to the fallback/provider below; the local model is never called.
+      LLM_MODE: ${LLM_MODE:-local}
       LLM_BASE_URL: http://llm:8080
       LLM_MODEL: ${LLM_MODEL:-gemma-4-E4B-it}
       LLM_API_KEY: ${LLM_API_KEY:-}
@@ -67,10 +70,11 @@ services:
       LLM_GRAMMAR_ENABLED: ${LLM_GRAMMAR_ENABLED:-true}
       LLM_TOOL_GRAMMAR: ${LLM_TOOL_GRAMMAR:-}
       LLM_REQUEST_EXTRA: ${LLM_REQUEST_EXTRA:-}
-      LLM_HYBRID_ENABLED: ${LLM_HYBRID_ENABLED:-true}
+      LLM_HYBRID_ENABLED: ${LLM_HYBRID_ENABLED:-false}
       LLM_HYBRID_AFTER_ROUNDS: ${LLM_HYBRID_AFTER_ROUNDS:-3}
       LLM_MAX_TOOL_ROUNDS: ${LLM_MAX_TOOL_ROUNDS:-5}
-      LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-https://api.deepseek.com}
+      # External providers are opt-in; empty keeps all LLM traffic in-cluster.
+      AGENT_LLM_FALLBACK_BASE_URL: ${AGENT_LLM_FALLBACK_BASE_URL:-}
       LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-deepseek-chat}
       LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
       LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-}
@@ -84,14 +88,16 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # Steve (coding persona) engine: "" = auto (OpenCode -> DeepSeek -> local)
       STEVE_ENGINE: ${STEVE_ENGINE:-}
-      STEVE_LLM_BASE_URL: ${STEVE_LLM_BASE_URL:-https://api.deepseek.com}
+      AGENT_STEVE_LLM_BASE_URL: ${AGENT_STEVE_LLM_BASE_URL:-}
       STEVE_LLM_MODEL: ${STEVE_LLM_MODEL:-deepseek-chat}
       STEVE_LLM_API_KEY: ${STEVE_LLM_API_KEY:-}
       AUTO_SWITCH_ENABLED: ${AUTO_SWITCH_ENABLED:-true}
       AGENT_FLOW_ENABLED: ${AGENT_FLOW_ENABLED:-true}
       AUTO_PUSH_ENABLED: ${AUTO_PUSH_ENABLED:-false}
-      # Writable MonoFS workspace (set MONOFS_ROUTER to enable)
+      # Writable MonoFS workspace (set MONOFS_ROUTER to enable).
+      # MONOFS_HEADLESS=true skips FUSE and uses the session socket.
       MONOFS_ROUTER: ${MONOFS_ROUTER:-}
+      MONOFS_HEADLESS: ${MONOFS_HEADLESS:-false}
       MONOFS_MOUNT: ${MONOFS_MOUNT:-/workspace}
       MONOFS_OVERLAY: ${MONOFS_OVERLAY:-/data/monofs-overlay}
       MONOFS_OVERLAY_DIR: ${MONOFS_OVERLAY:-/data/monofs-overlay}
@@ -107,17 +113,27 @@ services:
       AGENT_OIDC_SCOPE: ${AGENT_OIDC_SCOPE:-openid email profile offline_access}
       AGENT_OIDC_TOKEN: ${AGENT_OIDC_TOKEN:-}
       AGENT_OIDC_PUBLIC_BASE_URL: ${AGENT_OIDC_PUBLIC_BASE_URL:-}
+      AGENT_ADMIN_GROUPS: ${AGENT_ADMIN_GROUPS:-}
+      AGENT_SESSION_SECRET: ${AGENT_SESSION_SECRET:-}
+      # API auth is required by default (fail closed). Set AGENT_API_TOKEN or
+      # configure OIDC. AGENT_AUTH_REQUIRED=false is for isolated local dev only.
+      AGENT_API_TOKEN: ${AGENT_API_TOKEN:-}
+      AGENT_AUTH_REQUIRED: ${AGENT_AUTH_REQUIRED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:14317}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-agent.agent.lagent-backend}
       OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-guardian.partition=agent,guardian.intent=agent,guardian.asset=lagent-backend,guardian.asset.type=Compute,guardian.identity.kind=managed}
       OTEL_ENABLED: ${OTEL_ENABLED:-true}
-      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-true}
+      # OTLP TLS is inferred from the endpoint scheme (https -> secure). Set
+      # OTEL_EXPORTER_OTLP_INSECURE explicitly in a compose override if needed.
       OTEL_METRIC_EXPORT_INTERVAL_MS: ${OTEL_METRIC_EXPORT_INTERVAL_MS:-15000}
       AWS_EC2_METADATA_DISABLED: "true"
       AWS_REGION: ${AWS_REGION:-us-east-1}
     depends_on:
+      # `required: false` lets LLM_MODE=external start without the local model
+      # container while still ordering startup when it is present.
       llm:
         condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8090/api/health"]
       interval: 15s

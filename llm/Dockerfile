@@ -9,8 +9,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pip3 install --break-system-packages huggingface-hub && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY entrypoint.sh /entrypoint.sh
+# Run the inference server as an unprivileged user. The named /models volume is
+# initialised with this ownership; bind mounts must be chowned by the operator.
+RUN groupadd --gid 10001 llama \
+    && useradd --uid 10001 --gid llama --create-home --shell /bin/bash llama \
+    && mkdir -p /models \
+    && chown -R llama:llama /models /home/llama
+
+COPY --chown=llama:llama entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+USER llama
 
 EXPOSE 8080
 

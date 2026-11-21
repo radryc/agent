@@ -5,7 +5,10 @@ import logging
 import os
 from pathlib import Path
 
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
+
+from app.security.tls import MODE_OFF, load_tls_settings, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +17,14 @@ _runtime_overrides: dict = {}
 
 
 class Settings(BaseSettings):
+    cors_allowed_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8080",
+    ]
     llm_base_url: str = "http://llm:8080"
     agent_name: str = "StrataDev"
     agent_system_prompt: str = (
@@ -37,6 +48,15 @@ class Settings(BaseSettings):
     )
     database_url: str = "sqlite+aiosqlite:////data/lagent.db"
 
+    # LLM execution mode:
+    #   "local"    — in-cluster llama.cpp only (default)
+    #   "external" — only the configured external provider (LLM_FALLBACK_* or
+    #                LLM_FALLBACK_PROVIDER); the local model is never called
+    #   "hybrid"   — start local, escalate to the external provider
+    # Leave empty to derive local/hybrid from the legacy LLM_HYBRID_ENABLED
+    # boolean. External traffic stays opt-in: "external"/"hybrid" only works
+    # once AGENT_LLM_FALLBACK_BASE_URL (or a provider profile) is configured.
+    llm_mode: str = ""
     # LLM (OpenAI-compatible). Defaults to the in-cluster Gemma; point
     # LLM_BASE_URL/LLM_MODEL/LLM_API_KEY at a hosted provider (e.g. DeepSeek)
     # to use that instead.
@@ -54,11 +74,16 @@ class Settings(BaseSettings):
     llm_request_extra: str = ""
     # Hybrid routing: start on the local model, escalate to a hosted
     # OpenAI-compatible profile when the tool loop stalls, a tool call cannot
-    # be parsed, or the turn exceeds N tool rounds.
-    llm_hybrid_enabled: bool = True
+    # be parsed, or the turn exceeds N tool rounds. Off by default so source
+    # code and telemetry never leave the cluster unless explicitly opted in.
+    llm_hybrid_enabled: bool = False
     llm_hybrid_after_rounds: int = 3
     llm_max_tool_rounds: int = 5
-    llm_fallback_base_url: str = "https://api.deepseek.com"
+    # External fallback is opt-in: only AGENT_LLM_FALLBACK_BASE_URL enables it.
+    llm_fallback_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENT_LLM_FALLBACK_BASE_URL"),
+    )
     llm_fallback_model: str = "deepseek-chat"
     llm_fallback_api_key: str = ""
     # Optional named provider (from LLM_PROVIDERS_JSON) to use as the fallback.
@@ -73,7 +98,11 @@ class Settings(BaseSettings):
     # Steve persona (software engineering agent). Engine auto-detect order is
     # OpenCode -> DeepSeek -> local Gemma unless STEVE_ENGINE forces one.
     steve_engine: str = ""  # "", "auto", "opencode", "deepseek", "local"
-    steve_llm_base_url: str = "https://api.deepseek.com"
+    # External Steve engine is opt-in: only AGENT_STEVE_LLM_BASE_URL enables it.
+    steve_llm_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENT_STEVE_LLM_BASE_URL"),
+    )
     steve_llm_model: str = "deepseek-chat"
     steve_llm_api_key: str = ""
     steve_system_prompt: str = ""
@@ -85,6 +114,15 @@ class Settings(BaseSettings):
     # Deterministic specialist flow (TelemetryHound / TopologyAuditor / Otto /
     # Steve). Disable to fall back to the legacy single-agent tool loop.
     agent_flow_enabled: bool = True
+    # Incident-scoped evidence collection. Triage queries are anchored to the
+    # alert start time (when present) and never scan further back than
+    # triage_max_window_minutes. triage_max_parallel_queries bounds how many
+    # Doctor/Guardian requests a single triage may have in flight, so an
+    # investigation cannot stampede the telemetry backend.
+    triage_lookback_minutes: int = 30
+    triage_preroll_minutes: int = 5
+    triage_max_window_minutes: int = 120
+    triage_max_parallel_queries: int = 3
 
     # MonoFS writable workspace (used by Steve to edit/commit/push code).
     # MONOFS_OVERLAY_DIR is the same variable monofs-client uses to place
@@ -103,6 +141,17 @@ class Settings(BaseSettings):
     gemini_image_model: str = "imagen-3.0-generate-002"
     gemini_image_aspect_ratio: str = "16:9"
     gemini_image_count: int = 1
+
+    # API / WebSocket authentication and terminal execution controls
+    agent_auth_required: bool = True
+    agent_api_token: str = ""
+    # Comma-separated OIDC groups/roles allowed to mutate security settings
+    # through the API. Empty means only the API token may do so.
+    agent_admin_groups: str = ""
+    # HMAC key for the signed lagent_sso cookie. Falls back to the API token,
+    # then to a process-local random value.
+    agent_session_secret: str = ""
+    agent_terminal_enabled: bool = False
 
     # OIDC / SSO for Doctor, Guardian, and MonoFS calls.
     # Client credentials are the machine-to-machine path; the device flow is
@@ -133,7 +182,8 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "agent.agent.lagent-backend"
     otel_enabled: bool = False
-    otel_exporter_otlp_insecure: bool = True
+    # None means derive from the endpoint scheme (https -> secure).
+    otel_exporter_otlp_insecure: bool | None = None
     otel_metric_export_interval_ms: int = 15000
 
     guardian_url: str = "http://host.docker.internal:8090"
@@ -162,14 +212,67 @@ class Settings(BaseSettings):
     nightwatch_correlation_window_minutes: int = 10
     nightwatch_retention_days: int = 90
     nightwatch_llm_enabled: bool = True
-    nightwatch_llm_profile: str = "local"
+    # Empty means "use the agent's active LLM profile" (LLM_MODE aware).
+    nightwatch_llm_profile: str = ""
     nightwatch_max_concurrent_investigations: int = 3
     nightwatch_rca_queries_file: str = ""
     nightwatch_assignment_label: str = "nightwatch.strata.io/enabled"
     nightwatch_escalation_confidence: float = 0.5
     nightwatch_escalation_after_minutes: int = 20
 
-    model_config = {"env_prefix": "", "case_sensitive": False}
+    model_config = {
+        "env_prefix": "",
+        "case_sensitive": False,
+        "populate_by_name": True,
+    }
+
+    @model_validator(mode="after")
+    def _require_explicit_external_llm_opt_in(self):
+        """Ignore legacy LLM_*_BASE_URL values for external providers.
+
+        Pydantic-settings also matches a field's own name, so LLM_FALLBACK_BASE_URL
+        and STEVE_LLM_BASE_URL would otherwise silently re-enable egress. Only
+        the AGENT_-prefixed variables may turn an external provider on.
+        """
+        guarded = (
+            ("llm_fallback_base_url", "AGENT_LLM_FALLBACK_BASE_URL", "LLM_FALLBACK_BASE_URL"),
+            ("steve_llm_base_url", "AGENT_STEVE_LLM_BASE_URL", "STEVE_LLM_BASE_URL"),
+        )
+        for field_name, opt_in_env, legacy_env in guarded:
+            value = getattr(self, field_name)
+            if not os.getenv(opt_in_env) and value and value == os.getenv(legacy_env):
+                setattr(self, field_name, "")
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_tls_service_urls(self):
+        """Make outbound service URLs speak HTTPS when TLS is required.
+
+        Operator-provided URLs without a scheme (for example
+        ``doctor-query:18080``) get ``https://`` in required mode.  Explicitly
+        configured ``http://`` URLs are left as-is because they may target a
+        local service that does not terminate TLS.  ``off`` and ``optional``
+        preserve the previous behavior.  MonoFS router/search addresses are CLI
+        endpoints, not HTTP URLs, so they are deliberately left untouched.
+        """
+        tls_cfg = load_tls_settings()
+        if tls_cfg.mode == MODE_OFF:
+            return self
+        for field_name in (
+            "llm_base_url",
+            "llm_fallback_base_url",
+            "steve_llm_base_url",
+            "guardian_url",
+            "doctor_query_url",
+            "lb_edge_registry_url",
+            "nightwatch_url",
+            "nightwatch_sentinel_url",
+            "opencode_server_url",
+        ):
+            value = getattr(self, field_name, "")
+            if value:
+                setattr(self, field_name, normalize_url(value, tls_cfg))
+        return self
 
 
 settings = Settings()
@@ -183,6 +286,7 @@ def get_runtime(key: str):
 def get_all_runtime_settings() -> dict:
     defaults = {
         "system_prompt": settings.agent_system_prompt,
+        "llm_mode": settings.llm_mode,
         "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
         "llm_api_key": settings.llm_api_key,
@@ -224,6 +328,10 @@ def get_all_runtime_settings() -> dict:
         "auto_switch_enabled": settings.auto_switch_enabled,
         "auto_push_enabled": settings.auto_push_enabled,
         "agent_flow_enabled": settings.agent_flow_enabled,
+        "triage_lookback_minutes": settings.triage_lookback_minutes,
+        "triage_preroll_minutes": settings.triage_preroll_minutes,
+        "triage_max_window_minutes": settings.triage_max_window_minutes,
+        "triage_max_parallel_queries": settings.triage_max_parallel_queries,
         "monofs_router": settings.monofs_router,
         "monofs_mount": settings.monofs_mount,
         "monofs_overlay": settings.monofs_overlay,

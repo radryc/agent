@@ -12,9 +12,10 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
 from app.agent import loop as loop_mod
@@ -46,7 +47,7 @@ from app.agent.reports import (
 from app.agent.specialists import emit_step, run_specialist
 from app.agent.tools import execute_tool, get_skill
 from app.config import get_runtime, runtime_bool, settings
-from app.llm.client import fallback_ready
+from app.llm.client import default_profile, external_profile, fallback_ready
 
 logger = logging.getLogger(__name__)
 
@@ -111,32 +112,46 @@ GENERAL_TOOLS = {
 
 TELEMETRY_PROMPT = """You are TelemetryHound, a Doctor telemetry specialist.
 Your only job is to collect evidence about logs, metrics, and traces.
+- Scope every log and trace query to the incident window supplied in the task
+  context. Never query all history.
+- A deterministic baseline pack already covers error/warn logs, recent traces,
+  request traffic, 5xx rate, latency, and saturation for the partition. Do not
+  re-run those broad queries; spend your calls on drill-downs or gaps.
 - Discover metric names before writing PromQL when the metric is unknown.
 - Query metrics, logs, and traces independently. Empty logs never excuse
   skipping traces, and vice versa.
-- Prefer one strong query per signal over a catalog dump.
+- Prefer one strong query per signal over a catalog dump. Never repeat a query
+  that already ran in this investigation.
 - Never invent values, pod names, trace IDs, timestamps, or log lines.
 - Finish with a terse evidence brief: what you queried, what was found, and
-  which signals were empty.
+  which signals were empty. Name concrete error strings verbatim.
 """
 
 TOPOLOGY_PROMPT = """You are TopologyAuditor, a Guardian topology specialist.
 Your only job is to inspect deployment state, intent drift, asset health, and
 recent Guardian events.
-- Start with guardian_overview or guardian_partitions when scope is unclear.
+- A deterministic baseline pack already covers guardian_overview,
+  guardian_partition_detail for the partition, and doctor_event_analysis. Do
+  not re-run those same broad calls; drill into specific intents/assets.
 - Use guardian_partition_detail with intent/asset filters before concluding
   that a field or asset is missing.
 - Report drift, failing assets, and cross-partition targets explicitly.
 - Never invent partition, intent, asset, or event data.
-- Finish with a terse topology brief grounded in tool results.
+- Finish with a terse topology brief grounded in tool results. Quote concrete
+  failure messages (for example an APPLY error) verbatim.
 """
 
 OTTO_PROMPT = """You are Outage Otto, the principal SRE incident commander.
 You receive structured TelemetryReport and TopologyReport JSON produced by
-specialists. You do not have tools. Synthesize a verdict from the evidence.
+specialists, plus their first-hand specialist_briefs. Both specialists have
+finished; the payload is complete. You do not have tools. Synthesize a verdict
+from all of the evidence.
 
 Rules:
 - Do not invent evidence, metric values, services, or trace IDs.
+- The specialist_briefs are direct notes from the agents that ran the tools.
+  Treat concrete error strings in them or in topology.recent_events as
+  evidence, and quote them instead of falling back to "no signal".
 - If the evidence is weak, lower confidence and recommend escalation.
 - If the root cause is outside the alerting partition, use action "handoff".
 - Treat the golden_signals coverage report as part of the evidence. Never claim
@@ -262,6 +277,96 @@ def _partition_hint(message: str) -> str:
     return loop_mod._partition_hint(message or "")
 
 
+_ALERT_START_RE = re.compile(
+    r"(?:started(?:\s*at)?|starts?[_ ]?at|start[_ ]?time|since)\s*[:=]?\s*"
+    r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))",
+    re.IGNORECASE,
+)
+_RFC3339_RE = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\b"
+)
+
+
+def _parse_rfc3339(raw: str) -> datetime | None:
+    """Parse an RFC3339 timestamp, tolerating nanosecond fractions."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    # Python only accepts microsecond precision; clip longer fractions.
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_window_ts(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _incident_window(
+    message: str, *, now: datetime | None = None
+) -> tuple[datetime, datetime]:
+    """Anchor triage queries to the alert's start time.
+
+    Prefer an explicit "Started:"/"since" timestamp from the alert payload, then
+    the earliest plausible timestamp in the message. Fall back to a bounded
+    lookback so a vague request never turns into an all-history scan.
+    """
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    try:
+        lookback = int(get_runtime("triage_lookback_minutes") or 30)
+    except (TypeError, ValueError):
+        lookback = 30
+    try:
+        max_window = int(get_runtime("triage_max_window_minutes") or 120)
+    except (TypeError, ValueError):
+        max_window = 120
+    try:
+        preroll_minutes = int(get_runtime("triage_preroll_minutes") or 5)
+    except (TypeError, ValueError):
+        preroll_minutes = 5
+    lookback = max(5, lookback)
+    max_window = max(lookback, max_window)
+    preroll = timedelta(minutes=max(0, preroll_minutes))
+
+    start: datetime | None = None
+    match = _ALERT_START_RE.search(message or "")
+    if match:
+        start = _parse_rfc3339(match.group(1))
+    if start is None:
+        candidates = [
+            parsed
+            for parsed in (
+                _parse_rfc3339(item.group(1))
+                for item in _RFC3339_RE.finditer(message or "")
+            )
+            if parsed is not None
+            and now - timedelta(days=2) <= parsed <= now + timedelta(minutes=5)
+        ]
+        if candidates:
+            start = min(candidates)
+
+    explicit_start = start is not None and start <= now
+    if not explicit_start:
+        start = now - timedelta(minutes=lookback)
+    else:
+        # The trigger usually precedes the alert by a few seconds. Start just
+        # before the alert so the causal event is inside the window.
+        start -= preroll
+    if now - start > timedelta(minutes=max_window):
+        start = now - timedelta(minutes=max_window)
+    if now - start < timedelta(seconds=15):
+        # Keep a non-zero query range for very fresh alerts.
+        start = now - timedelta(seconds=15)
+    return start, now
+
+
 def _loads(text: str):
     try:
         return json.loads(text)
@@ -284,6 +389,126 @@ def _extract_json(text: str) -> dict | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+_JSON_STRING_FIELDS = (
+    "summary",
+    "root_cause_partition",
+    "root_cause_service",
+    "escalation_target",
+    "escalation_reason",
+    "recommended_action",
+    "recommendation_target",
+    "rationale",
+    "falsification",
+    "otto_response",
+)
+
+
+def _extract_partial_json_fields(text: str) -> dict:
+    """Recover the leading string fields from a truncated verdict payload.
+
+    Small models occasionally exceed the synthesis token budget, leaving a
+    valid prefix of the verdict JSON. Falling back to the raw text dumps that
+    JSON into the chat window; recovering the named fields keeps the operator
+    response structured.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned.startswith("{"):
+        return {}
+    out: dict = {}
+    for key in _JSON_STRING_FIELDS:
+        match = re.search(
+            rf'"{re.escape(key)}"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned
+        )
+        if match:
+            try:
+                out[key] = json.loads(f'"{match.group(1)}"')
+            except json.JSONDecodeError:
+                out[key] = match.group(1)
+    confidence = re.search(r'"confidence"\s*:\s*([0-9]*\.?[0-9]+)', cleaned)
+    if confidence:
+        try:
+            out["confidence"] = float(confidence.group(1))
+        except ValueError:
+            pass
+    return out
+
+
+def _looks_like_json_blob(text: str) -> bool:
+    cleaned = (text or "").strip()
+    return cleaned.startswith("{") or cleaned.startswith("```json")
+
+
+def _render_verdict_markdown(verdict: IncidentVerdict) -> str:
+    """Render a readable operator report from the structured verdict."""
+    lines: list[str] = [verdict.summary.strip() or "No summary available."]
+    prose = (verdict.otto_response or "").strip()
+    if prose and not _looks_like_json_blob(prose) and prose != verdict.summary.strip():
+        lines.append(prose)
+
+    lines.append("")
+    lines.append("**Root cause**")
+    root = verdict.root_cause_service or "undetermined"
+    partition = verdict.root_cause_partition or "unknown partition"
+    lines.append(f"- Service: `{root}`")
+    lines.append(f"- Partition: `{partition}`")
+    lines.append(f"- Confidence: {verdict.confidence:.0%}")
+
+    lines.append("")
+    lines.append("**Recommended action**")
+    action = verdict.recommended_action or "none"
+    target = verdict.recommendation_target or partition
+    lines.append(f"- `{action}` → `{target}`")
+    if verdict.escalate:
+        lines.append(
+            f"- Escalate to `{verdict.escalation_target or 'owning team'}`"
+            + (
+                f": {verdict.escalation_reason}"
+                if verdict.escalation_reason
+                else ""
+            )
+        )
+
+    if verdict.rationale:
+        lines.append("")
+        lines.append("**Why**")
+        lines.append(verdict.rationale.strip())
+
+    if verdict.falsification:
+        lines.append("")
+        lines.append("**What would prove this wrong**")
+        lines.append(verdict.falsification.strip())
+
+    if verdict.candidates:
+        lines.append("")
+        lines.append("**Candidates**")
+        for candidate in verdict.candidates[:5]:
+            label = " / ".join(
+                part
+                for part in (
+                    candidate.partition,
+                    candidate.service,
+                )
+                if part
+            ) or "unnamed"
+            lines.append(
+                f"- `{label}` — score {candidate.score:.2f}, "
+                f"confidence {candidate.confidence:.0%}"
+            )
+            if candidate.rationale:
+                lines.append(f"  {candidate.rationale.strip()}")
+
+    if verdict.improvements:
+        lines.append("")
+        lines.append("**Observability follow-ups**")
+        for item in verdict.improvements[:6]:
+            lines.append(
+                f"- **{item.title}** ({item.category}) — "
+                f"{item.proposed_change or item.rationale}"
+            )
+
+    return "\n".join(lines).strip()
 
 
 async def _history_context(session_id: str, limit: int = 6) -> str:
@@ -431,7 +656,11 @@ def _merge_verdict(
     base: IncidentVerdict, payload: dict | None, raw_text: str
 ) -> IncidentVerdict:
     if not isinstance(payload, dict):
-        if raw_text.strip():
+        payload = _extract_partial_json_fields(raw_text)
+    if not isinstance(payload, dict) or not payload:
+        # Never echo an unparseable JSON blob into the chat. The fallback
+        # verdict already contains a deterministic, readable summary.
+        if raw_text.strip() and not _looks_like_json_blob(raw_text):
             base.otto_response = raw_text.strip()
         return base
 
@@ -514,6 +743,107 @@ def _merge_verdict(
     return base
 
 
+_SYNTHESIS_MAX_CHARS = 18000
+_SYNTHESIS_EVIDENCE_LIMIT = 20
+_SYNTHESIS_BRIEF_LIMIT = 2400
+_HIGH_SIGNAL_RE = re.compile(
+    r"\b(error|fail(?:ed|ure)?|panic|fatal|timeout|unavailable|apply|invalid|"
+    r"5\d\d|oom|crashloop)\b",
+    re.IGNORECASE,
+)
+
+
+def _prioritized_evidence(records: object, limit: int) -> list[dict]:
+    """Keep the evidence most likely to explain a failure inside the budget."""
+    if not isinstance(records, list):
+        return []
+    items = [item for item in records if isinstance(item, dict)]
+    high = [
+        item
+        for item in items
+        if _HIGH_SIGNAL_RE.search(str(item.get("result_summary") or ""))
+        or _HIGH_SIGNAL_RE.search(str(item.get("query") or ""))
+    ]
+    rest = [item for item in items if item not in high]
+    return (high + rest)[:limit]
+
+
+def _bounded_report_dump(report: object, limit: int) -> dict:
+    dump = report.model_dump()  # type: ignore[attr-defined]
+    dump["evidence"] = _prioritized_evidence(dump.get("evidence"), limit)
+    return dump
+
+
+def _synthesis_payload(
+    *,
+    message: str,
+    partition: str,
+    telemetry: TelemetryReport,
+    topology: TopologyReport,
+    golden_signals: list[GoldenSignalCoverage] | None,
+    specialist_briefs: dict[str, str] | None,
+    incident_window: tuple[datetime, datetime] | None,
+) -> dict:
+    """Build a complete but bounded packet for Otto.
+
+    The old code truncated the serialized packet at 12k characters, which could
+    silently drop late evidence (for example the Guardian APPLY error). Shrink
+    the least important evidence instead, and keep the specialist briefs and
+    topology events intact so synthesis sees what the specialists found.
+    """
+    briefs = {
+        str(agent): str(text).strip()[: _SYNTHESIS_BRIEF_LIMIT]
+        for agent, text in (specialist_briefs or {}).items()
+        if str(text or "").strip()
+    }
+    window = (
+        {
+            "start": _format_window_ts(incident_window[0]),
+            "end": _format_window_ts(incident_window[1]),
+        }
+        if incident_window
+        else {}
+    )
+    signals = [item.model_dump() for item in (golden_signals or [])]
+    for evidence_limit in (_SYNTHESIS_EVIDENCE_LIMIT, 12, 6, 3):
+        payload = {
+            "request": message,
+            "alerting_partition": partition,
+            "incident_window": window,
+            "specialist_briefs": briefs,
+            "topology": _bounded_report_dump(topology, evidence_limit),
+            "telemetry": _bounded_report_dump(telemetry, evidence_limit),
+            "golden_signals": signals,
+        }
+        if len(json.dumps(payload, default=str)) <= _SYNTHESIS_MAX_CHARS:
+            return payload
+
+    # Last resort: keep the briefs and topology events, shed request/evidence.
+    return {
+        "request": (message or "")[:2000],
+        "alerting_partition": partition,
+        "incident_window": window,
+        "specialist_briefs": briefs,
+        "topology": {
+            "partition": topology.partition,
+            "health_status": topology.health_status,
+            "drifted_intents": topology.drifted_intents,
+            "failing_assets": topology.failing_assets,
+            "recent_events": topology.recent_events,
+            "cross_partition_targets": topology.cross_partition_targets,
+        },
+        "telemetry": {
+            "partition": telemetry.partition,
+            "metrics_queried": telemetry.metrics_queried,
+            "anomalous_metrics": telemetry.anomalous_metrics,
+            "error_logs": telemetry.error_logs,
+            "failing_spans": telemetry.failing_spans,
+            "empty_signals": telemetry.empty_signals,
+        },
+        "golden_signals": signals,
+    }
+
+
 async def _synthesize_verdict(
     *,
     message: str,
@@ -524,6 +854,8 @@ async def _synthesize_verdict(
     task_name: str = "outage_otto.synthesize",
     profile: str | None = None,
     golden_signals: list[GoldenSignalCoverage] | None = None,
+    specialist_briefs: dict[str, str] | None = None,
+    incident_window: tuple[datetime, datetime] | None = None,
 ) -> IncidentVerdict:
     await emit_step(emit, "outage_otto", task_name, "started")
     fallback = _fallback_verdict(
@@ -532,19 +864,25 @@ async def _synthesize_verdict(
         telemetry=telemetry,
         topology=topology,
     )
-    report_payload = {
-        "request": message,
-        "alerting_partition": partition,
-        "telemetry": telemetry.model_dump(),
-        "topology": topology.model_dump(),
-        "golden_signals": [item.model_dump() for item in (golden_signals or [])],
-    }
-    profile = profile or ("fallback" if fallback_ready() else "local")
+    report_payload = _synthesis_payload(
+        message=message,
+        partition=partition,
+        telemetry=telemetry,
+        topology=topology,
+        golden_signals=golden_signals,
+        specialist_briefs=specialist_briefs,
+        incident_window=incident_window,
+    )
+    # Synthesis prefers the external provider whenever one is configured
+    # (hybrid and external modes); local-only deployments stay local.
+    profile = profile or (
+        external_profile() if fallback_ready() else default_profile()
+    )
     messages = [
         {"role": "system", "content": OTTO_PROMPT},
         {
             "role": "user",
-            "content": json.dumps(report_payload, default=str)[:12000],
+            "content": json.dumps(report_payload, default=str),
         },
     ]
     raw = ""
@@ -552,7 +890,7 @@ async def _synthesize_verdict(
         raw = await loop_mod.chat_completion(
             messages,
             temperature=0.2,
-            max_tokens=900,
+            max_tokens=2400,
             stream=False,
             profile=profile,
         )
@@ -594,9 +932,209 @@ async def _synthesize_verdict(
         "outage_otto",
         task_name,
         "completed",
-        summary=verdict.otto_response or verdict.summary,
+        summary=(
+            verdict.summary
+            if _looks_like_json_blob(verdict.otto_response)
+            else (verdict.otto_response or verdict.summary)
+        ),
     )
     return verdict
+
+
+def _triage_telemetry_specs(
+    partition: str, start: datetime, end: datetime
+) -> list[tuple[str, dict]]:
+    """Queries every triage needs, scoped to the incident window.
+
+    Keep this pack small: each entry is a request to Doctor. The specialists
+    drill down from here instead of re-running broad scans.
+    """
+    window = {
+        "from": _format_window_ts(start),
+        "to": _format_window_ts(end),
+    }
+    return [
+        (
+            "doctor_logql_query",
+            {
+                "query": (
+                    f'{{guardian_partition="{partition}"}}'
+                    ' |~ "(?i)error|fail|panic|timeout|unavailable"'
+                ),
+                "start": window["from"],
+                "end": window["to"],
+                "limit": 50,
+            },
+        ),
+        (
+            "doctor_traces_recent",
+            {
+                "partition": partition,
+                "limit": 10,
+                "include_span_status": True,
+                **window,
+            },
+        ),
+        (
+            "doctor_metrics_query",
+            {
+                "promql": (
+                    f'sum(rate(http_server_request_duration_count{{guardian_partition="{partition}"}}[5m]))'
+                    f' or sum(rate(http_server_request_duration_seconds_count{{guardian_partition="{partition}"}}[5m]))'
+                ),
+                "compact": True,
+            },
+        ),
+        (
+            "doctor_metrics_query",
+            {
+                "promql": (
+                    f'sum(rate(http_server_request_duration_count{{guardian_partition="{partition}",http_response_status_code=~"5.."}}[5m]))'
+                    f' or sum(rate(http_server_request_duration_seconds_count{{guardian_partition="{partition}",http_response_status_code=~"5.."}}[5m]))'
+                ),
+                "compact": True,
+            },
+        ),
+        (
+            "doctor_metrics_query",
+            {
+                "promql": (
+                    f'histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_bucket{{guardian_partition="{partition}"}}[5m])))'
+                    f' or histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{{guardian_partition="{partition}"}}[5m])))'
+                ),
+                "compact": True,
+            },
+        ),
+        (
+            "doctor_metrics_query",
+            {
+                "promql": (
+                    f'max by (k8s_pod_name) (k8s_top_pod_cpu_usage_millicores{{k8s_namespace_name="div-demo"}})'
+                    if partition in {"diva-shared", "divb-shared"}
+                    else (
+                        f'sum by (service) (rate(process_cpu_seconds_total{{guardian_partition="{partition}"}}[5m]))'
+                        f' or sum(rate(container_cpu_usage_seconds_total{{guardian_partition="{partition}"}}[5m]))'
+                    )
+                ),
+                "compact": True,
+            },
+        ),
+    ]
+
+
+def _triage_topology_specs(partition: str) -> list[tuple[str, dict]]:
+    return [
+        ("guardian_overview", {}),
+        ("guardian_partition_detail", {"partition": partition}),
+        ("doctor_event_analysis", {"partition": partition, "tenant": "default", "limit": 50}),
+    ]
+
+
+def _parallel_query_limit() -> int:
+    try:
+        value = int(get_runtime("triage_max_parallel_queries") or 3)
+    except (TypeError, ValueError):
+        value = 3
+    return max(1, value)
+
+
+async def _collect_tool_evidence(
+    *,
+    agent_id: str,
+    task_name: str,
+    specs: list[tuple[str, dict]],
+    allowed: set[str],
+    emit: EventSink | None,
+    semaphore: asyncio.Semaphore | None = None,
+) -> list[ToolExecution]:
+    """Run deterministic evidence queries so Otto never depends on model luck.
+
+    Requests are bounded by ``triage_max_parallel_queries`` so an investigation
+    cannot stampede Doctor/Guardian with a dozen simultaneous scans. Callers
+    that run two collectors concurrently should pass a shared semaphore so the
+    cap is global, not per-collector.
+    """
+    started = time.perf_counter()
+    semaphore = semaphore or asyncio.Semaphore(_parallel_query_limit())
+
+    async def one(name: str, args: dict) -> ToolExecution:
+        async with semaphore:
+            tool_started = time.perf_counter()
+            await emit_step(
+                emit,
+                agent_id,
+                task_name,
+                "tool_call",
+                tool=name,
+                tool_args=args,
+                summary=name,
+            )
+            output = await execute_tool(name, args, allowed=allowed)
+            elapsed = int((time.perf_counter() - tool_started) * 1000)
+            await emit_step(
+                emit,
+                agent_id,
+                task_name,
+                "tool_result",
+                tool=name,
+                summary=output,
+            )
+        logger.info(
+            "[triage] %s %s %dms args=%s result=%dB",
+            agent_id,
+            name,
+            elapsed,
+            json.dumps(args, default=str)[:300],
+            len(output or ""),
+        )
+        return ToolExecution(name=name, args=args, result=output)
+
+    executions = await asyncio.gather(*(one(name, args) for name, args in specs))
+    evidence = list(executions)
+
+    # If the trace summary reports errors, fetch the waterfall for Otto. This
+    # is deterministic and does not depend on the model choosing a trace ID.
+    if "doctor_trace_detail" in allowed:
+        trace_ids: list[str] = []
+        for execution in executions:
+            if execution.name != "doctor_traces_recent":
+                continue
+            try:
+                payload = json.loads(execution.result)
+            except (TypeError, ValueError):
+                continue
+            for trace in payload.get("traces", []) if isinstance(payload, dict) else []:
+                if not isinstance(trace, dict):
+                    continue
+                if int(trace.get("error_count") or 0) > 0 and trace.get("trace_id"):
+                    trace_ids.append(str(trace["trace_id"]))
+        for trace_id in trace_ids[:2]:
+            evidence.append(await one("doctor_trace_detail", {"trace_id": trace_id}))
+
+    await emit_step(
+        emit,
+        agent_id,
+        task_name,
+        "completed",
+        summary=(
+            f"deterministic evidence: {len(evidence)} queries in "
+            f"{int((time.perf_counter() - started) * 1000)}ms"
+        ),
+    )
+    return evidence
+
+
+def _merge_executions(*groups: list[ToolExecution]) -> list[ToolExecution]:
+    out: list[ToolExecution] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups:
+        for execution in group:
+            key = (execution.name, json.dumps(execution.args, sort_keys=True, default=str))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(execution)
+    return out
 
 
 async def _run_diagnostic(
@@ -611,12 +1149,19 @@ async def _run_diagnostic(
 ]:
     partition = _partition_hint(message)
     requests_metric = metric_value_requested(message)
+    window_start, window_end = _incident_window(message)
+    window_note = (
+        f"Incident window (UTC): {_format_window_ts(window_start)} to "
+        f"{_format_window_ts(window_end)}. Scope every log and trace query to "
+        "this window; do not scan older history."
+    )
+    scoped_message = f"{message}\n\n{window_note}"
     telemetry_task = run_specialist(
         agent_id="telemetry_hound",
         system_prompt=TELEMETRY_PROMPT,
         allowed=TELEMETRY_TOOLS,
-        user_message=message,
-        profile="local",
+        user_message=scoped_message,
+        profile=profile,
         emit=emit,
         task_name="telemetry_hound.collect",
         context=context,
@@ -628,19 +1173,83 @@ async def _run_diagnostic(
         agent_id="topology_auditor",
         system_prompt=TOPOLOGY_PROMPT,
         allowed=TOPOLOGY_TOOLS,
-        user_message=message,
-        profile="local",
+        user_message=scoped_message,
+        profile=profile,
         emit=emit,
         task_name="topology_auditor.audit",
         context=context,
         require_tools=True,
         partition_hint=partition,
     )
-    telemetry_result, topology_result = await asyncio.gather(
-        telemetry_task, topology_task
+    deterministic_task = None
+    if partition:
+        evidence_semaphore = asyncio.Semaphore(_parallel_query_limit())
+        deterministic_task = asyncio.gather(
+            _collect_tool_evidence(
+                agent_id="telemetry_hound",
+                task_name="telemetry_hound.verify",
+                specs=_triage_telemetry_specs(partition, window_start, window_end),
+                allowed=TELEMETRY_TOOLS,
+                emit=emit,
+                semaphore=evidence_semaphore,
+            ),
+            _collect_tool_evidence(
+                agent_id="topology_auditor",
+                task_name="topology_auditor.verify",
+                specs=_triage_topology_specs(partition),
+                allowed=TOPOLOGY_TOOLS,
+                emit=emit,
+                semaphore=evidence_semaphore,
+            ),
+        )
+    # Make the ordering explicit in the crew timeline: Otto does not start
+    # synthesizing until every specialist and deterministic query has returned.
+    await emit_step(
+        emit,
+        "outage_otto",
+        "outage_otto.await_evidence",
+        "started",
+        summary="Waiting for TelemetryHound and TopologyAuditor to finish",
     )
-    telemetry = build_telemetry_report(partition, telemetry_result.executions)
-    topology = build_topology_report(partition, topology_result.executions)
+    if deterministic_task is None:
+        telemetry_result, topology_result = await asyncio.gather(
+            telemetry_task, topology_task
+        )
+        deterministic_telemetry: list[ToolExecution] = []
+        deterministic_topology: list[ToolExecution] = []
+    else:
+        (
+            telemetry_result,
+            topology_result,
+            (deterministic_telemetry, deterministic_topology),
+        ) = await asyncio.gather(telemetry_task, topology_task, deterministic_task)
+    telemetry_execs = _merge_executions(
+        telemetry_result.executions, deterministic_telemetry
+    )
+    topology_execs = _merge_executions(
+        topology_result.executions, deterministic_topology
+    )
+    logger.info(
+        "[triage] evidence partition=%s telemetry=%d topology=%d "
+        "specialist_errors=%s/%s",
+        partition,
+        len(telemetry_execs),
+        len(topology_execs),
+        telemetry_result.errors,
+        topology_result.errors,
+    )
+    await emit_step(
+        emit,
+        "outage_otto",
+        "outage_otto.await_evidence",
+        "completed",
+        summary=(
+            f"Evidence complete: TelemetryHound {len(telemetry_execs)} tool calls, "
+            f"TopologyAuditor {len(topology_execs)} tool calls"
+        ),
+    )
+    telemetry = build_telemetry_report(partition, telemetry_execs)
+    topology = build_topology_report(partition, topology_execs)
     golden_signals = analyze_golden_signals(telemetry, topology)
     verdict = await _synthesize_verdict(
         message=message,
@@ -649,6 +1258,11 @@ async def _run_diagnostic(
         topology=topology,
         emit=emit,
         golden_signals=golden_signals,
+        specialist_briefs={
+            "telemetry_hound": telemetry_result.text,
+            "topology_auditor": topology_result.text,
+        },
+        incident_window=(window_start, window_end),
     )
     return telemetry, topology, verdict, golden_signals
 
@@ -875,11 +1489,12 @@ async def run_turn(
     session_id: str,
     *,
     persona_id: str = "otto",
-    profile: str = "local",
+    profile: str | None = None,
     emit: EventSink | None = None,
     force_route: str | None = None,
 ) -> str:
     """Run one interactive turn through the deterministic flow."""
+    profile = profile or default_profile()
     if not runtime_bool("agent_flow_enabled", default=True):
         return await _legacy_turn(
             user_message,
@@ -976,7 +1591,7 @@ async def run_turn(
         emit=emit,
         context=context,
     )
-    text = verdict.otto_response or verdict.summary
+    text = _render_verdict_markdown(verdict)
     text = f"{text}\n\n{format_golden_signals(golden_signals)}"
     steve_report: SteveProposalReport | None = None
     approval: PendingApproval | None = None
@@ -1010,17 +1625,34 @@ async def run_turn(
     return text
 
 
-async def resolve_approval(approval_id: str, approved: bool) -> dict:
+async def resolve_approval(
+    approval_id: str,
+    approved: bool,
+    session_id: str | None = None,
+) -> dict:
     """Execute or reject a pending mutation approval.
 
     Returns a small payload used by the WebSocket layer to stream the result.
     """
-    approval = _pending_approvals.pop(approval_id, None)
+    request_session = str(session_id or "").strip()
+    if not request_session:
+        return {
+            "approved": False,
+            "text": "Approval request requires an authenticated session.",
+        }
+    approval = _pending_approvals.get(approval_id)
     if approval is None:
         return {
             "approved": False,
             "text": "This approval request has expired or was already handled.",
         }
+    if request_session != approval.session_id:
+        return {
+            "approved": False,
+            "text": "Approval request does not belong to this session.",
+            "session_id": request_session,
+        }
+    _pending_approvals.pop(approval_id, None)
     if not approved:
         text = f"Rejected `{approval.tool}`. No state was changed."
         await session_mgr.add_message(approval.session_id, "assistant", text, persona="otto")

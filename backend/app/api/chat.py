@@ -6,7 +6,7 @@ import json
 import logging
 import signal
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from app.agent.loop import ensure_session
 from app.agent.opencode import run_opencode
@@ -20,7 +20,10 @@ from app.agent.personas import (
 )
 from app.agent.router import resolve_persona, strip_mention
 from app.agent import session as session_mgr
-from app.agent.workspace import mount_active, mount_root
+from app.agent.workspace import fuse_mount_active, mount_root
+from app.auth.api_auth import require_api_auth, require_ws_auth
+from app.config import settings
+from app.llm.client import default_profile
 from app.terminal.exec import execute_command, get_terminal_manager
 from app.models.schemas import ChatRequest
 
@@ -28,7 +31,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/api/chat")
+@router.post("/api/chat", dependencies=[Depends(require_api_auth)])
 async def chat(req: ChatRequest):
     session_id = await ensure_session(req.session_id)
     result = await run_turn(req.message, session_id)
@@ -40,6 +43,8 @@ async def chat(req: ChatRequest):
 
 @router.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket):
+    if not await require_ws_auth(websocket):
+        return
     await websocket.accept()
     logger.info("WebSocket client connected")
     terminal_manager = get_terminal_manager()
@@ -80,6 +85,9 @@ async def ws_chat(websocket: WebSocket):
                 continue
 
             if msg_type == "terminal_start":
+                if not settings.agent_terminal_enabled:
+                    await safe_send({"type": "terminal_error", "data": "Terminal is disabled"})
+                    continue
                 requested_session_id = await ensure_session(data.get("session_id"))
                 await safe_send({"type": "session", "session_id": requested_session_id})
 
@@ -127,6 +135,9 @@ async def ws_chat(websocket: WebSocket):
                 continue
 
             if msg_type == "exec":
+                if not settings.agent_terminal_enabled:
+                    await safe_send({"type": "error", "data": "Terminal execution is disabled"})
+                    continue
                 user_message = data.get("data", "")
                 session_id = data.get("session_id")
                 if not user_message:
@@ -145,7 +156,12 @@ async def ws_chat(websocket: WebSocket):
             if msg_type == "approval":
                 approval_id = str(data.get("id") or "")
                 approved = bool(data.get("approved"))
-                result = await resolve_approval(approval_id, approved)
+                req_session_id = data.get("session_id")
+                result = await resolve_approval(
+                    approval_id,
+                    approved,
+                    session_id=str(req_session_id) if req_session_id else None,
+                )
                 result_session = result.get("session_id")
                 if result_session:
                     await safe_send({"type": "session", "session_id": result_session})
@@ -251,7 +267,13 @@ async def _handle_agent_message(
     processed = strip_mention(user_message) or user_message
 
     if persona.id != "steve":
-        await _stream_local(send_json, processed, session_id, persona_id=persona.id, profile="local")
+        await _stream_local(
+            send_json,
+            processed,
+            session_id,
+            persona_id=persona.id,
+            profile=default_profile(),
+        )
         return
 
     # Steve: dispatch to the resolved coding engine.
@@ -269,7 +291,13 @@ async def _handle_agent_message(
                 "session_id": session_id,
             }
         )
-        await _stream_local(send_json, processed, session_id, persona_id="steve", profile="local")
+        await _stream_local(
+            send_json,
+            processed,
+            session_id,
+            persona_id="steve",
+            profile=default_profile(),
+        )
         return
 
     profile = engine_profile(engine.id)
@@ -282,13 +310,13 @@ async def _stream_local(
     session_id: str,
     *,
     persona_id: str = DEFAULT_PERSONA_ID,
-    profile: str = "local",
+    profile: str | None = None,
 ):
     await run_turn(
         user_message,
         session_id,
         persona_id=persona_id,
-        profile=profile,
+        profile=profile or default_profile(),
         emit=send_json,
     )
     await send_json({"type": "done", "session_id": session_id})
@@ -299,7 +327,7 @@ async def _stream_opencode(send_json, user_message: str, session_id: str):
         await _stream_local(send_json, user_message, session_id, persona_id="steve")
         return
 
-    cwd = str(mount_root()) if mount_active() else None
+    cwd = str(mount_root()) if fuse_mount_active() else None
     async for chunk in run_opencode(
         user_message,
         session_id,

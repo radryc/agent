@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from app.nightwatch.guardian import NightwatchUpstreamError, _auth_headers
+from app.security.tls import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class DoctorClient:
 
     async def _client_or_create(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            self._client = httpx.AsyncClient(timeout=self.timeout, **httpx_client_kwargs())
             self._owns_client = True
         return self._client
 

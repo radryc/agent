@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from app.auth.oidc import OIDCError, oidc
+from app.auth.sso_cookie import sign_session_marker
 from app.config import get_runtime
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -36,6 +37,7 @@ async def auth_login(request: Request, next: str = "/"):
 
 @router.get("/callback")
 async def auth_callback(
+    request: Request,
     code: str = "",
     state: str = "",
     error: str = "",
@@ -50,14 +52,22 @@ async def auth_callback(
     except OIDCError as exc:
         return RedirectResponse(f"/?sso_error={quote(str(exc))}", status_code=302)
     response = RedirectResponse(result.get("next_path") or "/", status_code=302)
-    # Marker for the frontend; the authoritative state is the backend token.
-    response.set_cookie(
-        "lagent_sso",
-        "1",
-        httponly=True,
-        samesite="lax",
-        max_age=8 * 3600,
+    # Signed marker bound to the server-side login session. The backend token
+    # remains authoritative; the cookie only proves which browser completed SSO.
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
     )
+    is_https = request.url.scheme == "https" or forwarded_proto == "https"
+    cookie_value = sign_session_marker(oidc.session_marker())
+    if cookie_value:
+        response.set_cookie(
+            "lagent_sso",
+            cookie_value,
+            httponly=True,
+            secure=is_https,
+            samesite="lax",
+            max_age=8 * 3600,
+        )
     return response
 
 

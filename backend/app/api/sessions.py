@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.agent import session as session_mgr
+from app.auth.api_auth import require_api_auth
 from app.models.schemas import SessionUpdate
 
-router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+router = APIRouter(
+    prefix="/api/sessions",
+    tags=["sessions"],
+    dependencies=[Depends(require_api_auth)],
+)
 
 
 @router.get("")

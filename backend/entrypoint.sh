@@ -12,7 +12,17 @@ if [ -n "${MONOFS_ROUTER:-}" ]; then
   if mountpoint -q "$MONOFS_MOUNT" 2>/dev/null; then
     echo "[entrypoint] MonoFS already mounted at $MONOFS_MOUNT"
   elif ! command -v monofs-client >/dev/null 2>&1; then
-    echo "[entrypoint] monofs-client not found; skipping workspace mount" >&2
+    echo "[entrypoint] monofs-client not found; skipping workspace client" >&2
+  elif [ "${MONOFS_HEADLESS:-false}" = "true" ]; then
+    echo "[entrypoint] Starting headless MonoFS client: $MONOFS_ROUTER -> overlay $MONOFS_OVERLAY (no FUSE mount)"
+    nohup monofs-client \
+      --router "$MONOFS_ROUTER" \
+      --overlay "$MONOFS_OVERLAY" \
+      --writable \
+      --virtual-monorepo \
+      --headless \
+      >/data/monofs-client.log 2>&1 &
+    echo "[entrypoint] monofs-client (headless) started (pid $!)"
   else
     echo "[entrypoint] Starting writable MonoFS mount: $MONOFS_ROUTER -> $MONOFS_MOUNT (overlay: $MONOFS_OVERLAY)"
     nohup monofs-client \

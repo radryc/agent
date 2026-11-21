@@ -1,0 +1,812 @@
+import base64
+import json
+import sys
+import time
+import unittest
+from pathlib import Path
+import importlib.util
+from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "backend"))
+
+import app.config as config  # noqa: E402
+from app.agent import sre_flow  # noqa: E402
+from app.agent.guardrails import redact_sensitive_text  # noqa: E402
+from app.agent.tools import execute_tool, get_skill  # noqa: E402
+from app.api import agent as agent_api  # noqa: E402
+from app.api import chat as chat_api  # noqa: E402
+from app.api import guardian as guardian_api  # noqa: E402
+from app.api import media as media_api  # noqa: E402
+from app.api import nightwatch as nightwatch_api  # noqa: E402
+from app.api import proposal as proposal_api  # noqa: E402
+from app.api import sessions as sessions_api  # noqa: E402
+from app.api import settings as settings_api  # noqa: E402
+from app.api.auth import router as auth_router  # noqa: E402
+from app.auth.oidc import OIDCError, TokenState, oidc  # noqa: E402
+from app.auth.sso_cookie import sign_session_marker  # noqa: E402
+from app.llm import client as llm_client  # noqa: E402
+from app.telemetry.otel import resolve_otlp_insecure  # noqa: E402
+
+if importlib.util.find_spec("prometheus_client") is None:
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class _NoopMetricsMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            return await call_next(request)
+
+    _otel_stub = MagicMock()
+    _metrics_stub = MagicMock(MetricsMiddleware=_NoopMetricsMiddleware)
+    with patch.dict(
+        sys.modules,
+        {
+            "app.telemetry.otel": _otel_stub,
+            "app.telemetry.metrics": _metrics_stub,
+        },
+    ):
+        from app.main import _cors_settings, app as main_app  # noqa: E402
+else:
+    from app.main import _cors_settings, app as main_app  # noqa: E402
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _make_jwt(claims: dict, header: dict | None = None) -> str:
+    hdr = header or {"alg": "RS256", "typ": "JWT"}
+    return f"{_b64url(json.dumps(hdr).encode())}.{_b64url(json.dumps(claims).encode())}.signature"
+
+
+def _rsa_jwk(public_key, kid: str = "test-key") -> dict:
+    numbers = public_key.public_numbers()
+
+    def _int_bytes(value: int) -> bytes:
+        length = max(1, (value.bit_length() + 7) // 8)
+        return value.to_bytes(length, "big")
+
+    return {
+        "kty": "RSA",
+        "kid": kid,
+        "use": "sig",
+        "alg": "RS256",
+        "n": _b64url(_int_bytes(numbers.n)),
+        "e": _b64url(_int_bytes(numbers.e)),
+    }
+
+
+def _make_signed_jwt(
+    claims: dict,
+    private_key,
+    kid: str = "test-key",
+    *,
+    alg: str = "RS256",
+) -> str:
+    header = {"alg": alg, "typ": "JWT", "kid": kid}
+    signing_input = (
+        f"{_b64url(json.dumps(header).encode())}."
+        f"{_b64url(json.dumps(claims).encode())}"
+    )
+    signature = private_key.sign(
+        signing_input.encode(),
+        padding.PKCS1v15(),
+        hashes.SHA256(),
+    )
+    return f"{signing_input}.{_b64url(signature)}"
+
+
+_TEST_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_TEST_JWK = _rsa_jwk(_TEST_PRIVATE_KEY.public_key())
+
+
+class FakeResponse:
+    def __init__(self, status_code: int = 200, payload: dict | None = None):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = json.dumps(self._payload)
+
+    def json(self):
+        return self._payload
+
+
+def _fake_http_client(response: FakeResponse):
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = False
+    client.post = AsyncMock(return_value=response)
+    return client
+
+
+class CorsRemediationTest(unittest.TestCase):
+    def test_default_cors_origins_and_credentials(self):
+        s = config.Settings()
+        expected = [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://localhost:8080",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:8080",
+        ]
+        self.assertEqual(s.cors_allowed_origins, expected)
+        origins, allow_creds = _cors_settings(s.cors_allowed_origins)
+        self.assertEqual(origins, expected)
+        self.assertTrue(allow_creds)
+
+    def test_wildcard_cors_disables_credentials(self):
+        origins, allow_creds = _cors_settings(["*"])
+        self.assertEqual(origins, ["*"])
+        self.assertFalse(allow_creds)
+
+    def test_app_cors_allows_configured_origin_and_blocks_unknown(self):
+        client = TestClient(main_app)
+        allowed = client.options(
+            "/api/auth/status",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        self.assertEqual(
+            allowed.headers.get("access-control-allow-origin"),
+            "http://localhost:5173",
+        )
+        self.assertEqual(
+            allowed.headers.get("access-control-allow-credentials"),
+            "true",
+        )
+
+        disallowed = client.options(
+            "/api/auth/status",
+            headers={
+                "Origin": "https://evil.example.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        self.assertIsNone(disallowed.headers.get("access-control-allow-origin"))
+
+
+class CookieSecureFlagTest(unittest.TestCase):
+    def setUp(self):
+        oidc.logout()
+        self.addCleanup(oidc.logout)
+        app = FastAPI()
+        app.include_router(auth_router)
+        self.client = TestClient(app)
+
+    def _patches(self):
+        marker = patch.object(oidc, "session_marker", return_value="session-1")
+        login = patch.object(
+            oidc,
+            "complete_login",
+            AsyncMock(return_value={"next_path": "/"}),
+        )
+        return marker, login
+
+    def test_callback_sets_secure_signed_cookie_on_forwarded_https(self):
+        marker, login = self._patches()
+        with marker, login:
+            resp = self.client.get(
+                "/api/auth/callback?code=abc&state=xyz",
+                headers={"x-forwarded-proto": "https"},
+                follow_redirects=False,
+            )
+        self.assertEqual(resp.status_code, 302)
+        set_cookie = resp.headers.get("set-cookie", "")
+        self.assertIn("lagent_sso=", set_cookie)
+        self.assertNotIn("lagent_sso=1;", set_cookie)
+        self.assertIn(sign_session_marker("session-1"), set_cookie)
+        self.assertIn("HttpOnly", set_cookie)
+        self.assertIn("Secure", set_cookie)
+
+    def test_callback_omits_secure_cookie_on_plain_http(self):
+        marker, login = self._patches()
+        with marker, login:
+            resp = self.client.get(
+                "/api/auth/callback?code=abc&state=xyz",
+                follow_redirects=False,
+            )
+        self.assertEqual(resp.status_code, 302)
+        set_cookie = resp.headers.get("set-cookie", "")
+        self.assertIn("lagent_sso=", set_cookie)
+        self.assertNotIn("lagent_sso=1;", set_cookie)
+        self.assertNotIn("Secure", set_cookie)
+
+
+class OIDCIdTokenValidationTest(unittest.IsolatedAsyncioTestCase):
+    KEYS = (
+        "agent_oidc_issuer",
+        "agent_oidc_authorization_url",
+        "agent_oidc_token_url",
+        "agent_oidc_client_id",
+        "agent_oidc_client_secret",
+    )
+    ISSUER = "https://idp.example.com/application/o/lagent/"
+
+    def setUp(self):
+        oidc.logout()
+        for key in self.KEYS:
+            config._runtime_overrides.pop(key, None)
+        config._runtime_overrides.update(
+            {
+                "agent_oidc_issuer": self.ISSUER,
+                "agent_oidc_authorization_url": "https://idp.example.com/authorize",
+                "agent_oidc_token_url": "https://idp.example.com/token",
+                "agent_oidc_client_id": "lagent-client",
+                "agent_oidc_client_secret": "secret",
+            }
+        )
+        self.addCleanup(self._cleanup)
+        jwks_patch = patch.object(
+            oidc, "_fetch_jwks", AsyncMock(return_value=[_TEST_JWK])
+        )
+        jwks_patch.start()
+        self.addCleanup(jwks_patch.stop)
+
+    def _cleanup(self):
+        oidc.logout()
+        for key in self.KEYS:
+            config._runtime_overrides.pop(key, None)
+
+    async def _start_login(self) -> tuple[str, str]:
+        url = await oidc.begin_login("https://app.example.com/api/auth/callback", "/")
+        qs = parse_qs(urlsplit(url).query)
+        return qs["state"][0], qs["nonce"][0]
+
+    async def _complete(
+        self,
+        *,
+        claims_overrides: dict | None = None,
+        kid: str = "test-key",
+        include_nonce: bool = True,
+        include_id_token: bool = True,
+        tamper_signature: bool = False,
+    ):
+        state, nonce = await self._start_login()
+        claims = {
+            "iss": self.ISSUER,
+            "aud": "lagent-client",
+            "exp": int(time.time()) + 300,
+            "sub": "alice@example.com",
+        }
+        if include_nonce:
+            claims["nonce"] = nonce
+        if claims_overrides:
+            claims.update(claims_overrides)
+        id_token = _make_signed_jwt(claims, _TEST_PRIVATE_KEY, kid=kid)
+        if tamper_signature:
+            id_token = id_token[:-4] + ("AAAA" if id_token[-4:] != "AAAA" else "BBBB")
+        payload: dict = {"access_token": "acc-1", "expires_in": 3600}
+        if include_id_token:
+            payload["id_token"] = id_token
+        client = _fake_http_client(FakeResponse(payload=payload))
+        with patch("app.auth.oidc.httpx.AsyncClient", return_value=client):
+            return await oidc.complete_login("code-1", state)
+
+    async def test_valid_id_token_succeeds(self):
+        res = await self._complete()
+        self.assertEqual(res["status"], "authorized")
+
+    async def test_rejects_missing_id_token(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(include_id_token=False)
+        self.assertIn("no id_token", str(ctx.exception))
+
+    async def test_rejects_alg_none(self):
+        state, nonce = await self._start_login()
+        claims = {
+            "iss": self.ISSUER,
+            "aud": "lagent-client",
+            "exp": int(time.time()) + 300,
+            "nonce": nonce,
+        }
+        id_token = _make_jwt(claims, header={"alg": "none", "kid": "test-key"})
+        client = _fake_http_client(
+            FakeResponse(payload={"access_token": "acc-1", "id_token": id_token})
+        )
+        with patch("app.auth.oidc.httpx.AsyncClient", return_value=client):
+            with self.assertRaises(OIDCError) as ctx:
+                await oidc.complete_login("code-1", state)
+        self.assertIn("unsupported id_token alg", str(ctx.exception))
+
+    async def test_rejects_tampered_signature(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(tamper_signature=True)
+        self.assertIn("signature", str(ctx.exception))
+
+    async def test_rejects_unknown_kid(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(kid="unknown-key")
+        self.assertIn("signing key not found", str(ctx.exception))
+
+    async def test_rejects_missing_nonce_claim(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(include_nonce=False)
+        self.assertIn("nonce", str(ctx.exception))
+
+    async def test_rejects_mismatched_issuer(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(claims_overrides={"iss": "https://attacker.example.com/"})
+        self.assertIn("issuer", str(ctx.exception))
+
+    async def test_rejects_mismatched_audience(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(claims_overrides={"aud": "other-client"})
+        self.assertIn("audience", str(ctx.exception))
+
+    async def test_rejects_multiple_audiences_without_matching_azp(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(
+                claims_overrides={"aud": ["lagent-client", "other-client"]}
+            )
+        self.assertIn("authorized party", str(ctx.exception))
+
+    async def test_rejects_expired_id_token(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(claims_overrides={"exp": int(time.time()) - 60})
+        self.assertIn("expired", str(ctx.exception))
+
+    async def test_rejects_mismatched_nonce(self):
+        with self.assertRaises(OIDCError) as ctx:
+            await self._complete(claims_overrides={"nonce": "wrong-nonce"})
+        self.assertIn("nonce", str(ctx.exception))
+
+
+class ApprovalSessionBindingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_resolve_approval_rejects_mismatched_session_without_consuming(self):
+        approval = sre_flow._register_approval(
+            "session-owner",
+            "guardian_reconcile",
+            {"partition": "monofs"},
+            rationale="test",
+        )
+        self.addCleanup(sre_flow._pending_approvals.pop, approval.id, None)
+
+        wrong = await sre_flow.resolve_approval(
+            approval.id, True, session_id="session-attacker"
+        )
+        self.assertFalse(wrong["approved"])
+        self.assertIn("does not belong", wrong["text"])
+        self.assertIn(approval.id, sre_flow._pending_approvals)
+
+        with patch.object(
+            sre_flow, "execute_tool", AsyncMock(return_value="ok")
+        ), patch.object(sre_flow.session_mgr, "add_message", AsyncMock()):
+            right = await sre_flow.resolve_approval(
+                approval.id, True, session_id="session-owner"
+            )
+        self.assertTrue(right["approved"])
+        self.assertNotIn(approval.id, sre_flow._pending_approvals)
+
+    def test_workspace_mutations_require_confirmation(self):
+        self.assertTrue(get_skill("workspace_write").mutating)
+        self.assertTrue(get_skill("workspace_commit").mutating)
+        self.assertTrue(get_skill("workspace_push").mutating)
+
+    async def test_resolve_approval_requires_a_session_id(self):
+        approval = sre_flow._register_approval(
+            "session-owner",
+            "guardian_reconcile",
+            {"partition": "monofs"},
+            rationale="test",
+        )
+        self.addCleanup(sre_flow._pending_approvals.pop, approval.id, None)
+
+        for missing in (None, "", "   "):
+            result = await sre_flow.resolve_approval(approval.id, True, session_id=missing)
+            self.assertFalse(result["approved"])
+            self.assertIn("requires an authenticated session", result["text"])
+            self.assertIn(approval.id, sre_flow._pending_approvals)
+
+    async def test_workspace_write_is_blocked_without_confirm(self):
+        skill = get_skill("workspace_write")
+        handler = AsyncMock(return_value="ok")
+        with patch.object(skill, "handler", handler):
+            result = await execute_tool(
+                "workspace_write", {"path": "a.txt", "content": "x"}
+            )
+        self.assertIn("mutates system state", result)
+        handler.assert_not_awaited()
+
+        with patch.object(skill, "handler", handler):
+            result = await execute_tool(
+                "workspace_write",
+                {"path": "a.txt", "content": "x", "confirm": True},
+            )
+        self.assertEqual(result, "ok")
+        handler.assert_awaited_once()
+
+
+class ExternalLLMRedactionTest(unittest.IsolatedAsyncioTestCase):
+    def test_redact_sensitive_text_patterns(self):
+        sample = (
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig\n"
+            "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
+            "OPENAI_KEY=sk-proj-1234567890abcdef123456\n"
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n"
+            "SSN: 123-45-6789\n"
+            "Card: 4111-1111-1111-1111 and 4111111111111111\n"
+            "Safe timestamp: 2026-11-18 07:22:03\n"
+        )
+        redacted = redact_sensitive_text(sample)
+        self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", redacted)
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", redacted)
+        self.assertNotIn("sk-proj-1234567890abcdef123456", redacted)
+        self.assertNotIn("MIIEowIBAAKCAQEA", redacted)
+        self.assertNotIn("123-45-6789", redacted)
+        self.assertNotIn("4111-1111-1111-1111", redacted)
+        self.assertNotIn("4111111111111111", redacted)
+        self.assertIn("2026-11-18 07:22:03", redacted)
+
+    def test_is_external_llm_url(self):
+        self.assertFalse(llm_client.is_external_llm_url("http://llm:8080"))
+        self.assertFalse(llm_client.is_external_llm_url("http://localhost:8080"))
+        self.assertFalse(llm_client.is_external_llm_url("http://127.0.0.1:11434"))
+        self.assertTrue(llm_client.is_external_llm_url("https://api.deepseek.com"))
+        self.assertTrue(llm_client.is_external_llm_url("https://api.openai.com/v1"))
+
+    async def test_chat_completion_redacts_only_for_external_urls(self):
+        captured: list[dict] = []
+
+        async def fake_post(path, json=None):
+            captured.append(json)
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+            return resp
+
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(side_effect=fake_post)
+
+        messages = [{"role": "user", "content": "key AKIAIOSFODNN7EXAMPLE"}]
+
+        with patch.object(
+            llm_client,
+            "_get_client",
+            return_value=(
+                mock_http,
+                {
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-chat",
+                    "chat_path": "/v1/chat/completions",
+                    "supports_grammar": False,
+                    "extra": {},
+                },
+            ),
+        ):
+            await llm_client.chat_completion(messages, stream=False, profile="fallback")
+
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", captured[0]["messages"][0]["content"])
+        # Original caller list is not mutated.
+        self.assertIn("AKIAIOSFODNN7EXAMPLE", messages[0]["content"])
+
+        captured.clear()
+        with patch.object(
+            llm_client,
+            "_get_client",
+            return_value=(
+                mock_http,
+                {
+                    "base_url": "http://llm:8080",
+                    "model": "gemma-4-E4B-it",
+                    "chat_path": "/v1/chat/completions",
+                    "supports_grammar": True,
+                    "extra": {},
+                },
+            ),
+        ):
+            await llm_client.chat_completion(messages, stream=False, profile="local")
+
+        self.assertIn("AKIAIOSFODNN7EXAMPLE", captured[0]["messages"][0]["content"])
+
+
+class ApiAndWebSocketAuthTest(unittest.TestCase):
+    def setUp(self):
+        self._orig_auth_required = config.settings.agent_auth_required
+        self._orig_api_token = config.settings.agent_api_token
+        self._orig_terminal_enabled = config.settings.agent_terminal_enabled
+        config.settings.agent_auth_required = True
+        config.settings.agent_api_token = "test-secret-token"
+        config.settings.agent_terminal_enabled = False
+        oidc.logout()
+
+        app = FastAPI()
+        app.include_router(settings_api.router)
+        app.include_router(sessions_api.router)
+        app.include_router(guardian_api.router)
+        app.include_router(nightwatch_api.router)
+        app.include_router(proposal_api.router)
+        app.include_router(chat_api.router)
+        app.include_router(agent_api.router)
+        app.include_router(media_api.router)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        config.settings.agent_auth_required = self._orig_auth_required
+        config.settings.agent_api_token = self._orig_api_token
+        config.settings.agent_terminal_enabled = self._orig_terminal_enabled
+        oidc.logout()
+
+    def test_security_defaults(self):
+        defaults = config.Settings()
+        self.assertTrue(defaults.agent_auth_required)
+        self.assertEqual(defaults.agent_api_token, "")
+        self.assertFalse(defaults.agent_terminal_enabled)
+
+    def test_protected_endpoints_return_401_without_auth(self):
+        endpoints = [
+            ("GET", "/api/settings"),
+            ("PUT", "/api/settings"),
+            ("GET", "/api/sessions"),
+            ("POST", "/api/sessions"),
+            ("GET", "/api/sessions/s1"),
+            ("DELETE", "/api/sessions/s1"),
+            ("PATCH", "/api/sessions/s1"),
+            ("GET", "/api/guardian/overview"),
+            ("GET", "/api/guardian/partitions"),
+            ("GET", "/api/guardian/partitions/demo"),
+            ("GET", "/api/nightwatch/overview"),
+            ("GET", "/api/nightwatch/brief"),
+            ("GET", "/api/nightwatch/assignments"),
+            ("GET", "/api/nightwatch/incidents"),
+            ("GET", "/api/nightwatch/incidents/inc-1"),
+            ("GET", "/api/nightwatch/activity"),
+            ("POST", "/api/agent/proposal"),
+            ("POST", "/api/chat"),
+            ("GET", "/api/agent/status"),
+            ("GET", "/api/agent/models"),
+            ("GET", "/api/media/generated/example.txt"),
+        ]
+        for method, path in endpoints:
+            resp = self.client.request(method, path)
+            self.assertEqual(resp.status_code, 401, f"{method} {path} should return 401")
+
+    def test_wrong_or_unconfigured_bearer_token_returns_401(self):
+        resp = self.client.get(
+            "/api/settings",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        self.assertEqual(resp.status_code, 401)
+
+        config.settings.agent_api_token = ""
+        resp_empty = self.client.get(
+            "/api/settings",
+            headers={"Authorization": "Bearer "},
+        )
+        self.assertEqual(resp_empty.status_code, 401)
+
+    def test_valid_bearer_token_allows_protected_endpoints(self):
+        headers = {"Authorization": "Bearer test-secret-token"}
+        with patch.object(
+            sessions_api.session_mgr,
+            "list_sessions",
+            new=AsyncMock(return_value=[]),
+        ):
+            resp = self.client.get("/api/sessions", headers=headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), [])
+
+        settings_resp = self.client.get("/api/settings", headers=headers)
+        self.assertEqual(settings_resp.status_code, 200)
+
+    def test_oidc_user_session_allows_access_while_m2m_token_does_not(self):
+        # M2M client-credentials token alone must not authenticate user APIs.
+        oidc._state = TokenState(
+            access_token="m2m-token",
+            expires_at=time.time() + 300,
+            source="client_credentials",
+        )
+        self.assertEqual(self.client.get("/api/settings").status_code, 401)
+
+        # Interactive user OIDC session grants access.
+        oidc._user_state = TokenState(
+            access_token="user-token",
+            expires_at=time.time() + 300,
+            source="authorization_code",
+            subject="alice@example.com",
+        )
+        self.assertEqual(self.client.get("/api/settings").status_code, 200)
+
+    def test_oidc_non_admin_cannot_mutate_settings(self):
+        oidc._user_state = TokenState(
+            access_token="user-token",
+            expires_at=time.time() + 300,
+            source="authorization_code",
+            subject="alice@example.com",
+        )
+        self.assertEqual(self.client.get("/api/settings").status_code, 200)
+        resp = self.client.put("/api/settings", json={"llm_model": "attacker-model"})
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("Administrator", resp.json()["detail"])
+
+    def test_oidc_admin_group_can_mutate_settings(self):
+        config._runtime_overrides["agent_admin_groups"] = "lagent-admins"
+        self.addCleanup(config._runtime_overrides.pop, "agent_admin_groups", None)
+        token = _make_jwt(
+            {"sub": "alice@example.com", "groups": ["lagent-admins"]},
+            header={"alg": "none"},
+        )
+        oidc._user_state = TokenState(
+            access_token=token,
+            expires_at=time.time() + 300,
+            source="authorization_code",
+            subject="alice@example.com",
+        )
+        with patch.object(settings_api, "save_runtime_settings") as save:
+            resp = self.client.put("/api/settings", json={"llm_model": "approved-model"})
+        self.assertEqual(resp.status_code, 200)
+        save.assert_called_once_with({"llm_model": "approved-model"})
+
+    def test_api_token_can_mutate_settings(self):
+        headers = {"Authorization": "Bearer test-secret-token"}
+        with patch.object(settings_api, "save_runtime_settings") as save:
+            resp = self.client.put(
+                "/api/settings",
+                json={"llm_model": "operator-model"},
+                headers=headers,
+            )
+        self.assertEqual(resp.status_code, 200)
+        save.assert_called_once_with({"llm_model": "operator-model"})
+
+    def test_ws_chat_rejects_unauthenticated_with_1008(self):
+        with self.assertRaises(WebSocketDisconnect) as ctx:
+            with self.client.websocket_connect("/ws/chat"):
+                pass
+        self.assertEqual(ctx.exception.code, 1008)
+
+        # Cookie without a valid OIDC user session is also rejected.
+        with self.assertRaises(WebSocketDisconnect) as ctx_cookie:
+            with self.client.websocket_connect(
+                "/ws/chat",
+                headers={"Cookie": "lagent_sso=1"},
+            ):
+                pass
+        self.assertEqual(ctx_cookie.exception.code, 1008)
+
+    def test_ws_chat_accepts_query_bearer_and_oidc_cookie(self):
+        with self.client.websocket_connect("/ws/chat?token=test-secret-token") as ws:
+            ws.send_json({"type": "ping"})
+            self.assertEqual(ws.receive_json(), {"type": "pong"})
+
+        with self.client.websocket_connect(
+            "/ws/chat",
+            headers={"Authorization": "Bearer test-secret-token"},
+        ) as ws:
+            ws.send_json({"type": "ping"})
+            self.assertEqual(ws.receive_json(), {"type": "pong"})
+
+        oidc._user_state = TokenState(
+            access_token="user-token",
+            expires_at=time.time() + 300,
+            source="authorization_code",
+        )
+        oidc._session_token = "session-1"
+        cookie = f"lagent_sso={sign_session_marker('session-1')}"
+        with self.client.websocket_connect(
+            "/ws/chat",
+            headers={"Cookie": cookie},
+        ) as ws:
+            ws.send_json({"type": "ping"})
+            self.assertEqual(ws.receive_json(), {"type": "pong"})
+
+        # A forged/unsigned cookie must not authenticate even with a live session.
+        with self.assertRaises(WebSocketDisconnect) as ctx_forged:
+            with self.client.websocket_connect(
+                "/ws/chat",
+                headers={"Cookie": "lagent_sso=1"},
+            ):
+                pass
+        self.assertEqual(ctx_forged.exception.code, 1008)
+
+        # A signature bound to a different session is also rejected.
+        with self.assertRaises(WebSocketDisconnect) as ctx_other:
+            with self.client.websocket_connect(
+                "/ws/chat",
+                headers={"Cookie": f"lagent_sso={sign_session_marker('other-session')}"},
+            ):
+                pass
+        self.assertEqual(ctx_other.exception.code, 1008)
+
+    def test_ws_chat_blocks_terminal_start_and_exec_when_disabled(self):
+        config.settings.agent_terminal_enabled = False
+        with patch.object(
+            chat_api, "ensure_session", new=AsyncMock(return_value="s1")
+        ) as mock_ensure, patch.object(
+            chat_api, "execute_command"
+        ) as mock_exec:
+            with self.client.websocket_connect("/ws/chat?token=test-secret-token") as ws:
+                ws.send_json({"type": "terminal_start", "session_id": "s1"})
+                self.assertEqual(
+                    ws.receive_json(),
+                    {"type": "terminal_error", "data": "Terminal is disabled"},
+                )
+
+                ws.send_json({"type": "exec", "data": "id", "session_id": "s1"})
+                self.assertEqual(
+                    ws.receive_json(),
+                    {"type": "error", "data": "Terminal execution is disabled"},
+                )
+            mock_ensure.assert_not_called()
+            mock_exec.assert_not_called()
+
+    def test_ws_chat_allows_terminal_when_enabled(self):
+        config.settings.agent_terminal_enabled = True
+        fake_mgr = MagicMock()
+        fake_mgr.subscribe = AsyncMock(return_value=chat_api.asyncio.Queue())
+        fake_mgr.unsubscribe = AsyncMock()
+
+        async def fake_exec(_cmd, _sid):
+            yield {"type": "exec_output", "data": "ok\n"}
+
+        with patch.object(
+            chat_api, "get_terminal_manager", return_value=fake_mgr
+        ), patch.object(
+            chat_api, "ensure_session", new=AsyncMock(return_value="s1")
+        ), patch.object(
+            chat_api, "execute_command", side_effect=fake_exec
+        ):
+            with self.client.websocket_connect("/ws/chat?token=test-secret-token") as ws:
+                ws.send_json({"type": "terminal_start", "session_id": "s1"})
+                self.assertEqual(
+                    ws.receive_json(),
+                    {"type": "session", "session_id": "s1"},
+                )
+
+                ws.send_json({"type": "exec", "data": "echo ok", "session_id": "s1"})
+                self.assertEqual(
+                    ws.receive_json(),
+                    {"type": "session", "session_id": "s1"},
+                )
+                self.assertEqual(
+                    ws.receive_json(),
+                    {"type": "exec_output", "data": "ok\n"},
+                )
+
+
+class DockerfileHardeningTest(unittest.TestCase):
+    def test_no_passwordless_sudo_in_dockerfile(self):
+        dockerfile = (REPO_ROOT / "backend" / "Dockerfile").read_text()
+        self.assertNotIn("NOPASSWD:ALL", dockerfile)
+        self.assertNotIn("/etc/sudoers.d/developer", dockerfile)
+
+    def test_uv_installer_is_pinned(self):
+        dockerfile = (REPO_ROOT / "backend" / "Dockerfile").read_text()
+        self.assertNotIn("https://astral.sh/uv/install.sh", dockerfile)
+        self.assertIn("https://astral.sh/uv/${UV_VERSION}/install.sh", dockerfile)
+        self.assertIn("ARG UV_VERSION=", dockerfile)
+
+    def test_llm_container_runs_as_non_root(self):
+        dockerfile = (REPO_ROOT / "llm" / "Dockerfile").read_text()
+        self.assertIn("USER llama", dockerfile)
+        self.assertIn("useradd --uid 10001", dockerfile)
+        self.assertNotIn("USER root", dockerfile)
+
+    def test_frontend_container_runs_as_non_root(self):
+        dockerfile = (REPO_ROOT / "frontend" / "Dockerfile").read_text()
+        self.assertIn("nginx-unprivileged", dockerfile)
+        self.assertIn("USER 101", dockerfile)
+
+
+class OtlpTlsDefaultTest(unittest.TestCase):
+    def test_insecure_defaults_from_endpoint_scheme(self):
+        self.assertTrue(resolve_otlp_insecure("http://collector:4317", None))
+        self.assertFalse(resolve_otlp_insecure("https://collector:4317", None))
+        self.assertFalse(resolve_otlp_insecure("HTTPS://collector:4317", None))
+
+    def test_explicit_override_wins(self):
+        self.assertFalse(resolve_otlp_insecure("http://collector:4317", False))
+        self.assertTrue(resolve_otlp_insecure("https://collector:4317", True))
+
+    def test_settings_default_defers_to_scheme(self):
+        self.assertIsNone(config.Settings().otel_exporter_otlp_insecure)
+
+
+if __name__ == "__main__":
+    unittest.main()

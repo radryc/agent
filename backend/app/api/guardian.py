@@ -3,13 +3,15 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 
-from app.config import settings
+from app.auth.api_auth import require_api_auth
 from app.auth.oidc import oidc
+from app.config import settings
+from app.security.tls import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["guardian"])
+router = APIRouter(tags=["guardian"], dependencies=[Depends(require_api_auth)])
 
 _TIMEOUT = httpx.Timeout(10.0)
 
@@ -20,7 +22,9 @@ async def _guardian_get_first(paths: list[str]) -> tuple[int, bytes, str]:
     last_ct = "application/json"
     try:
         headers = await oidc.auth_headers()
-        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT, headers=headers, **httpx_client_kwargs()
+        ) as client:
             for raw_path in paths:
                 url = f"{settings.guardian_url}/{raw_path.lstrip('/')}"
                 r = await client.get(url)
@@ -40,7 +44,9 @@ async def _guardian_get(path: str) -> tuple[int, bytes, str]:
     url = f"{settings.guardian_url}/{path.lstrip('/')}"
     try:
         headers = await oidc.auth_headers()
-        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT, headers=headers, **httpx_client_kwargs()
+        ) as client:
             r = await client.get(url)
             ct = r.headers.get("content-type", "application/json")
             return r.status_code, r.content, ct

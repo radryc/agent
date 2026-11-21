@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
 from pathlib import Path
@@ -48,15 +50,22 @@ def session_socket() -> Path:
     return overlay_dir() / "session.sock"
 
 
+def fuse_mount_active() -> bool:
+    """True only when the MonoFS FUSE mount is actually mounted."""
+    try:
+        return os.path.ismount(mount_root())
+    except OSError:
+        return False
+
+
 def mount_active() -> bool:
     """True when a MonoFS mount (or its session socket) is available."""
-    root = mount_root()
-    try:
-        if os.path.ismount(root):
-            return True
-    except OSError:
-        pass
-    return session_socket().exists()
+    return fuse_mount_active() or session_socket().exists()
+
+
+def headless_active() -> bool:
+    """True when the session socket is available but the FUSE mount is not."""
+    return not fuse_mount_active() and session_socket().exists()
 
 
 def workspace_snapshot() -> dict:
@@ -67,6 +76,7 @@ def workspace_snapshot() -> dict:
         "overlay": str(overlay_dir()),
         "router": router_addr(),
         "mounted": mount_active(),
+        "headless": headless_active(),
         "socket": session_socket().exists(),
         "writable": mount_active(),
     }
@@ -146,22 +156,65 @@ async def _run_session(args: list[str], timeout: float = SESSION_QUICK_TIMEOUT) 
     return out or "(empty output)"
 
 
+async def _socket_fs_call(action: str, timeout: float = SESSION_QUICK_TIMEOUT, **fields) -> dict:
+    """Send one filesystem request to the monofs-client session socket."""
+    socket_path = session_socket()
+    if not socket_path.exists():
+        raise WorkspaceError(
+            "MonoFS workspace is not active (no session socket at "
+            f"{socket_path}). Configure MONOFS_ROUTER and start monofs-client with --writable or --headless."
+        )
+
+    payload = {"action": action, **fields}
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(str(socket_path)), timeout=5
+        )
+    except (OSError, asyncio.TimeoutError) as exc:
+        raise WorkspaceError(f"cannot connect to MonoFS session socket: {exc}") from exc
+
+    try:
+        writer.write(json.dumps(payload).encode("utf-8") + b"\n")
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.readline(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise WorkspaceError(f"monofs-session {action} timed out after {timeout}s") from exc
+    except OSError as exc:
+        raise WorkspaceError(f"monofs-session {action} failed: {exc}") from exc
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+    try:
+        response = json.loads(raw.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WorkspaceError(f"invalid response from monofs-client: {exc}") from exc
+    if not response.get("success"):
+        raise WorkspaceError(response.get("error") or f"{action} failed")
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Tool handlers (registered in tools.py)
 # ---------------------------------------------------------------------------
 
 async def workspace_status(args: dict) -> str:
     snapshot = workspace_snapshot()
+    mode = "headless (session socket)" if snapshot["headless"] else "fuse mount"
     lines = [
         f"Mount: {snapshot['mount']}",
         f"Overlay: {snapshot['overlay']}",
         f"Router: {snapshot['router'] or '(not configured)'}",
+        f"Mode: {mode}",
         f"Active: {'yes' if snapshot['mounted'] else 'no'}",
     ]
     if not snapshot["socket"]:
         lines.append(
             "Session socket not found. Steve cannot edit/commit/push until the MonoFS "
-            "mount is running (set MONOFS_ROUTER and restart the backend)."
+            "workspace client is running (set MONOFS_ROUTER and restart the backend)."
         )
         return "\n".join(lines)
     try:
@@ -173,8 +226,40 @@ async def workspace_status(args: dict) -> str:
 
 
 async def workspace_list(args: dict) -> str:
+    raw = str(args.get("path", ".")).strip() or "."
+    if headless_active():
+        try:
+            response = await _socket_fs_call("list", path=raw)
+        except WorkspaceError as exc:
+            return f"Error: {exc}"
+        entries = response.get("entries") or []
+        if not entries:
+            return f"'{raw}' is empty"
+        try:
+            ordered = sorted(
+                entries,
+                key=lambda entry: (
+                    not bool(entry.get("is_dir")),
+                    str(entry.get("name", "")).lower(),
+                ),
+            )
+        except (TypeError, AttributeError):
+            ordered = entries
+
+        lines: list[str] = []
+        for entry in ordered:
+            if len(lines) >= MAX_LIST_ENTRIES:
+                lines.append("...[truncated]")
+                break
+            suffix = "/" if entry.get("is_dir") else ""
+            size = ""
+            if not entry.get("is_dir") and int(entry.get("size") or 0) > 0:
+                size = f"  ({int(entry['size'])} bytes)"
+            lines.append(f"{entry.get('name', '')}{suffix}{size}")
+        return _truncate("\n".join(lines))
+
     try:
-        target = _resolve_path(str(args.get("path", ".")))
+        target = _resolve_path(raw)
     except WorkspaceError as exc:
         return f"Error: {exc}"
     if not target.is_dir():
@@ -206,6 +291,32 @@ async def workspace_read(args: dict) -> str:
     raw = str(args.get("path", "")).strip()
     if not raw:
         return "Error: path is required"
+
+    if headless_active():
+        try:
+            stat_response = await _socket_fs_call("stat", path=raw)
+            stat = stat_response.get("stat") or {}
+            if stat.get("is_dir"):
+                return f"Error: '{raw}' is a directory"
+            read_response = await _socket_fs_call(
+                "read", path=raw, offset=0, size=MAX_READ_BYTES
+            )
+        except WorkspaceError as exc:
+            return f"Error: {exc}"
+        data = base64.b64decode(read_response.get("content") or "")
+        total = int(stat.get("size") or len(data))
+        truncated = total > len(data)
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return (
+                f"'{raw}' appears to be binary ({total} bytes). "
+                "Reading binary files is not supported."
+            )
+        if truncated:
+            text += f"\n...[truncated at {len(data)} bytes of {total}]"
+        return text
+
     try:
         target = _resolve_path(raw)
     except WorkspaceError as exc:
@@ -241,12 +352,42 @@ async def workspace_write(args: dict) -> str:
     if not isinstance(content, str):
         content = str(content)
 
+    create_dirs = str(args.get("create_dirs", "true")).strip().lower() not in {"false", "0", "no"}
+
+    if headless_active():
+        try:
+            existing = None
+            try:
+                stat_response = await _socket_fs_call("stat", path=raw)
+                existing = stat_response.get("stat")
+            except WorkspaceError:
+                existing = None
+            if existing and existing.get("is_dir"):
+                return f"Error: '{raw}' is a directory"
+            if not create_dirs:
+                parent = raw.strip("/").rsplit("/", 1)[0] if "/" in raw.strip("/") else ""
+                if parent:
+                    try:
+                        await _socket_fs_call("stat", path=parent)
+                    except WorkspaceError:
+                        return f"Error: parent directory of '{raw}' does not exist"
+            payload = content.encode("utf-8")
+            await _socket_fs_call(
+                "write",
+                path=raw,
+                content=base64.b64encode(payload).decode("ascii"),
+                create_parents=create_dirs,
+            )
+        except WorkspaceError as exc:
+            return f"Error: {exc}"
+        state = "updated" if existing else "created"
+        return f"Wrote {len(payload)} bytes to {raw} ({state})"
+
     try:
         target = _resolve_path(raw)
     except WorkspaceError as exc:
         return f"Error: {exc}"
 
-    create_dirs = str(args.get("create_dirs", "true")).strip().lower() not in {"false", "0", "no"}
     existed = target.exists()
     try:
         if create_dirs:
@@ -265,10 +406,13 @@ async def workspace_diff(args: dict) -> str:
     cmd = ["diff"]
     path = str(args.get("path", "")).strip()
     if path:
-        try:
-            path = _relative(_resolve_path(path))
-        except WorkspaceError as exc:
-            return f"Error: {exc}"
+        if headless_active():
+            path = path.strip("/")
+        else:
+            try:
+                path = _relative(_resolve_path(path))
+            except WorkspaceError as exc:
+                return f"Error: {exc}"
         cmd.append(path)
     try:
         return _truncate(await _run_session(cmd, timeout=SESSION_QUICK_TIMEOUT))

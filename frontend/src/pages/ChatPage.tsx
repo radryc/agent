@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useChatStore } from "../stores/chatStore";
 import type { Mode } from "../types";
 import Terminal, { type TerminalHandle } from "../components/terminal/Terminal";
@@ -10,6 +10,18 @@ import ApprovalCard from "../components/chat/ApprovalCard";
 import SsoStatusButton from "../components/layout/SsoStatusButton";
 import ContextRail from "../components/chat/ContextRail";
 import NightwatchBanner from "../components/nightwatch/NightwatchBanner";
+
+function decodeTriagePayload(value: string): { prompt?: string; title?: string } | null {
+  try {
+    const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 const AGENT_PROMPTS: Record<string, string> = {
   local: "$ ",
@@ -27,6 +39,7 @@ export default function ChatPage() {
     streamEngine,
     sessions,
     switchSession,
+    createSession,
     sendMessage,
     renameSession,
     isStreaming,
@@ -40,12 +53,15 @@ export default function ChatPage() {
     sendTerminalSignal,
     addTerminalHistory,
     terminalConnected,
+    agentConnected,
   } = useChatStore();
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [view, setView] = useState<"chat" | "split" | "terminal">("chat");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const triageHandled = useRef(false);
 
   const prompt = AGENT_PROMPTS[activeAgent] || "$ ";
 
@@ -66,6 +82,26 @@ export default function ChatPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  useEffect(() => {
+    const raw = searchParams.get("triage");
+    if (!raw || triageHandled.current || !agentConnected) return;
+    triageHandled.current = true;
+    const payload = decodeTriagePayload(raw);
+    if (!payload?.prompt) {
+      setSearchParams({}, { replace: true });
+      return;
+    }
+    void (async () => {
+      const id = await createSession();
+      if (payload.title) await renameSession(id, payload.title);
+      sendMessage(payload.prompt as string);
+      const next = new URLSearchParams(searchParams);
+      next.delete("triage");
+      setSearchParams(next, { replace: true });
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentConnected, searchParams]);
 
   // In agent mode the conversation is rendered as chat bubbles. The terminal
   // is only mounted in terminal mode, where it streams shell output directly.

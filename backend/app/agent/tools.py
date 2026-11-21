@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import math
@@ -12,7 +13,7 @@ import socket
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Awaitable
 from urllib.parse import parse_qs, quote_plus, urlparse
@@ -24,6 +25,7 @@ from app.config import get_runtime, runtime_bool, settings
 from app.agent import graph_validation
 from app.agent import workspace as workspace_tools
 from app.auth.oidc import oidc
+from app.security.tls import httpx_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,7 @@ _DDG_ATTEMPTS_PER_BACKEND = 2
 _DDG_RETRY_BASE_SECONDS = 1.0
 
 DOCTOR_QUERY_URL = settings.doctor_query_url
-DOCTOR_TIMEOUT = httpx.Timeout(15.0)
+DOCTOR_TIMEOUT = httpx.Timeout(60.0)
 GUARDIAN_TIMEOUT = httpx.Timeout(15.0)
 MONOFS_SEARCH_TIMEOUT = 15.0
 MAX_EVENT_ANALYSIS_LIMIT = 500
@@ -161,7 +163,9 @@ async def _guardian_get(path: str) -> str:
     if raw_path.startswith("api/") and not raw_path.startswith("api/m2m/"):
         candidates = ["api/m2m/" + raw_path[len("api/"):], raw_path]
     headers = await oidc.auth_headers()
-    async with httpx.AsyncClient(timeout=GUARDIAN_TIMEOUT, headers=headers) as client:
+    async with httpx.AsyncClient(
+        timeout=GUARDIAN_TIMEOUT, headers=headers, **httpx_client_kwargs()
+    ) as client:
         last_error: Exception | None = None
         for candidate in candidates:
             url = f"{settings.guardian_url.rstrip('/')}/{candidate}"
@@ -183,7 +187,9 @@ async def _guardian_get(path: str) -> str:
 async def _guardian_post(path: str) -> str:
     url = f"{settings.guardian_url.rstrip('/')}/{path.lstrip('/')}"
     headers = await oidc.auth_headers()
-    async with httpx.AsyncClient(timeout=GUARDIAN_TIMEOUT, headers=headers) as client:
+    async with httpx.AsyncClient(
+        timeout=GUARDIAN_TIMEOUT, headers=headers, **httpx_client_kwargs()
+    ) as client:
         r = await client.post(url)
         r.raise_for_status()
         return r.text
@@ -229,10 +235,14 @@ def _doctor_error_detail(response: httpx.Response) -> str:
     return detail
 
 
-async def _doctor_get(path: str) -> str:
+async def _doctor_get(path: str, *, timeout: httpx.Timeout | None = None) -> str:
     url = f"{DOCTOR_QUERY_URL.rstrip('/')}/{path.lstrip('/')}"
     headers = await oidc.auth_headers()
-    async with httpx.AsyncClient(timeout=DOCTOR_TIMEOUT, headers=headers) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout or DOCTOR_TIMEOUT,
+        headers=headers,
+        **httpx_client_kwargs(),
+    ) as client:
         r = await client.get(url)
         if r.is_error:
             raise DoctorQueryError(_doctor_error_detail(r))
@@ -811,7 +821,9 @@ register(Skill(
 async def _tool_lb_edge_services(_args: dict) -> str:
     base = str(get_runtime("lb_edge_registry_url") or settings.lb_edge_registry_url).rstrip("/")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=5.0), **httpx_client_kwargs()
+        ) as client:
             resp = await client.get(f"{base}/services")
             resp.raise_for_status()
             return _truncate(resp.text)
@@ -1674,6 +1686,27 @@ def _log_record_matches(
     return True
 
 
+def _record_matches_partition(record: dict, partition: str) -> bool:
+    """Match a log record to a partition even when it is not a stream label."""
+    target = (partition or "").strip()
+    if not target:
+        return True
+    attrs = record.get("attributes") or {}
+    resource = record.get("resource_attributes") or {}
+    candidates = {
+        str(record.get("partition") or ""),
+        str(attrs.get("guardian.partition") or ""),
+        str(attrs.get("guardian_partition") or ""),
+        str(attrs.get("partition") or ""),
+        str(resource.get("guardian.partition") or ""),
+        str(resource.get("guardian_partition") or ""),
+    }
+    if any(candidate == target for candidate in candidates):
+        return True
+    service = str(record.get("service") or "")
+    return service.startswith(f"{target}.") or service.startswith(f"{target}-")
+
+
 async def _tool_doctor_logs_services(args: dict) -> str:
     partition = str(args.get("partition", "")).strip()
     params = ["tenant=default"]
@@ -1715,13 +1748,19 @@ async def _tool_doctor_logs_search(args: dict) -> str:
     to_ts = str(args.get("to", "")).strip()
     limit = _to_int(args.get("limit"), default=20, minimum=1, maximum=100)
 
+    # Default to a bounded window so an ad-hoc search never scans all history.
+    if not from_ts and not to_ts:
+        now = datetime.now(timezone.utc)
+        from_ts = (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        to_ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     # Doctor applies the partition filter *after* the row limit, so a small
     # limit can return zero even when matching records exist. Over-fetch, then
-    # filter and truncate here. Short service names / components / assets are
-    # matched locally because the stored service field is fully qualified
-    # (e.g. monofs.monofs-storage.router-a).
+    # filter and truncate here. Keep the over-fetch modest (the old fixed 1000
+    # row scan made every triage log query expensive) and only widen to 1000
+    # when the first page came back empty.
     client_filter = bool(component or asset or (service and "." not in service))
-    scan_limit = 1000 if (partition or client_filter) else limit
+    scan_limit = min(1000, max(limit * 5, 100)) if (partition or client_filter) else limit
 
     def build_params(*, include_service: bool, scan: int) -> list[str]:
         params = ["tenant=default", f"limit={scan}"]
@@ -1775,6 +1814,40 @@ async def _tool_doctor_logs_search(args: dict) -> str:
                 ]
                 scan_limit = 1000
 
+        # Some federated backends (notably GCP) expose the partition as an
+        # attribute but not as an indexed stream label. Doctor's partition
+        # pushdown then filters the backend out and returns zero records even
+        # though the logs exist. Fall back to an unfiltered scan and match the
+        # partition (or its service prefix) locally.
+        if not results and partition and not client_filter:
+            broad = [
+                "tenant=default",
+                "limit=1000",
+            ]
+            if query:
+                broad.append(f"q={quote_plus(query)}")
+            if from_ts:
+                broad.append(f"from={quote_plus(from_ts)}")
+            if to_ts:
+                broad.append(f"to={quote_plus(to_ts)}")
+            try:
+                raw = await _doctor_get(
+                    f"/v1/logs/search?{'&'.join(broad)}",
+                    timeout=httpx.Timeout(30.0),
+                )
+                broad_payload = json.loads(raw)
+            except Exception as exc:  # noqa: BLE001 - fallback only
+                logger.info("log partition fallback failed: %s", exc)
+                broad_payload = None
+            if isinstance(broad_payload, dict):
+                results = [
+                    record
+                    for record in (broad_payload.get("results") or [])
+                    if isinstance(record, dict)
+                    and _record_matches_partition(record, partition)
+                ]
+                scan_limit = 1000
+
         payload["filters"] = {
             "partition": partition,
             "service": service,
@@ -1800,9 +1873,9 @@ register(Skill(
         "component": "Guardian component filter, e.g. monofs-router (optional)",
         "asset": "Guardian asset filter, e.g. router-a (optional)",
         "query": "Text to search in log bodies (optional; omit to list recent logs)",
-        "from": "Start time RFC3339 (optional)",
-        "to": "End time RFC3339 (optional)",
-        "limit": "Max results to show (default 20, max 100; the tool scans up to 1000)",
+        "from": "Start time RFC3339 (optional; defaults to 30m ago)",
+        "to": "End time RFC3339 (optional; defaults to now)",
+        "limit": "Max results to show (default 20, max 100; bounded over-fetch, up to 1000 on retry)",
     },
     status_prefix="Searching Doctor logs",
     handler=_tool_doctor_logs_search,
@@ -1903,7 +1976,7 @@ async def _tool_doctor_logql_query(args: dict) -> str:
     if not query:
         return "Error: LogQL query is required (e.g. '{service=~\".+\"} |= \"error\"')"
     query = _normalize_logql_severity(query)
-    limit = _to_int(args.get("limit"), default=100, minimum=1, maximum=1000)
+    limit = _to_int(args.get("limit"), default=50, minimum=1, maximum=1000)
     direction = str(args.get("direction", "backward")).strip() or "backward"
     params = [
         f"query={quote_plus(query)}",
@@ -1912,6 +1985,13 @@ async def _tool_doctor_logql_query(args: dict) -> str:
     ]
     start = str(args.get("start", "")).strip()
     end = str(args.get("end", "")).strip()
+    # Never let an ad-hoc LogQL query fall back to Loki's default all-history
+    # scan. Triage passes an explicit incident window; everyone else gets a
+    # bounded 30-minute default.
+    if not start and not end:
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     if start:
         params.append(f"start={quote_plus(start)}")
     if end:
@@ -1955,9 +2035,9 @@ register(Skill(
     description="Query Doctor with native Loki LogQL (/loki/api/v1/query_range). Supports stream selectors, line filters, label filters, parsers, and metric queries. Call doctor_logql_schema first to see labels; severity is the `level` stream label (level=\"warn\"), not body text. Use this when the simplified doctor_logs_search is not expressive enough.",
     parameters={
         "query": "LogQL query, e.g. '{guardian_partition=\"monofs\"} |= \"metadata not found\"'",
-        "start": "Start time (RFC3339 or Unix timestamp; default 1h ago)",
-        "end": "End time (RFC3339 or Unix timestamp; default now)",
-        "limit": "Max log lines (default 100, max 1000)",
+        "start": "Start time (RFC3339 or Unix timestamp; defaults to 30m ago)",
+        "end": "End time (RFC3339 or Unix timestamp; defaults to now)",
+        "limit": "Max log lines (default 50, max 1000)",
         "direction": "backward or forward (default backward)",
     },
     status_prefix="Querying Doctor LogQL",
@@ -2414,13 +2494,22 @@ async def _tool_doctor_graph_validate(args: dict) -> str:
         if content is not None and str(content).strip():
             document = graph_validation.parse_text(str(content), fmt)
         elif path:
-            target = Path(path).expanduser()
-            if not target.is_absolute():
-                target = workspace_tools.mount_root() / target
-            if not target.is_file():
-                return f"Error: graph file not found: {target}"
-            label = str(target)
-            document = graph_validation.load_document(target)
+            if workspace_tools.headless_active() and not Path(path).is_absolute():
+                try:
+                    response = await workspace_tools._socket_fs_call("read", path=path)
+                    data = base64.b64decode(response.get("content") or b"")
+                    document = graph_validation.parse_text(data.decode("utf-8"), fmt)
+                    label = path
+                except Exception as exc:
+                    return f"Error: graph file not found: {path} ({exc})"
+            else:
+                target = Path(path).expanduser()
+                if not target.is_absolute():
+                    target = workspace_tools.mount_root() / target
+                if not target.is_file():
+                    return f"Error: graph file not found: {target}"
+                label = str(target)
+                document = graph_validation.load_document(target)
         else:
             return "Error: provide path=<workspace file> or content=<JSON/YAML>"
     except Exception as exc:
@@ -2449,7 +2538,7 @@ async def _tool_doctor_traces_recent(args: dict) -> str:
     partition = args.get("partition", "")
     from_ts = args.get("from", "")
     to_ts = args.get("to", "")
-    limit = _to_int(args.get("limit"), default=20, minimum=1, maximum=50)
+    limit = _to_int(args.get("limit"), default=10, minimum=1, maximum=50)
     include_status = _to_bool(args.get("include_span_status"), default=True)
     errors_only = _to_bool(args.get("errors_only"), default=False)
     params = [f"tenant=default", f"limit={min(limit, 50)}"]
@@ -2461,11 +2550,61 @@ async def _tool_doctor_traces_recent(args: dict) -> str:
         params.append(f"from={quote_plus(str(from_ts))}")
     if to_ts:
         params.append(f"to={quote_plus(str(to_ts))}")
-    try:
-        data = await _doctor_get(f"/v1/traces/recent?{'&'.join(params)}")
-    except Exception as e:
-        logger.warning("doctor_traces_recent failed: %s", e)
-        return f"Doctor traces query failed: {e}"
+
+    # The recent-traces endpoint scans a wide window and can exceed Doctor's
+    # upstream storage timeout (HTTP 500 cause=backend_timeout). Retry with a
+    # progressively narrower window instead of surfacing a transient timeout as
+    # "no trace evidence" to Otto.
+    def _retry_params(window_minutes: int, retry_limit: int) -> list[str]:
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(minutes=window_minutes)
+        retry = [
+            "tenant=default",
+            f"limit={retry_limit}",
+            f"from={quote_plus(start.strftime('%Y-%m-%dT%H:%M:%SZ'))}",
+            f"to={quote_plus(now.strftime('%Y-%m-%dT%H:%M:%SZ'))}",
+        ]
+        if partition:
+            retry.append(f"partition={quote_plus(str(partition))}")
+        if service:
+            retry.append(f"service={quote_plus(str(service))}")
+        return retry
+
+    attempts: list[str] = []
+    data: str | None = None
+    request_sets = [params]
+    if not from_ts:
+        request_sets.extend(
+            [
+                _retry_params(30, min(limit, 10)),
+                _retry_params(10, min(limit, 5)),
+            ]
+        )
+    for index, request_params in enumerate(request_sets):
+        try:
+            data = await _doctor_get(
+                f"/v1/traces/recent?{'&'.join(request_params)}",
+                timeout=httpx.Timeout(60.0),
+            )
+            if index:
+                logger.info(
+                    "doctor_traces_recent recovered on retry %d (window=%s)",
+                    index,
+                    request_params,
+                )
+            break
+        except Exception as e:  # noqa: BLE001 - retry all transport/5xx failures
+            attempts.append(str(e))
+            logger.warning(
+                "doctor_traces_recent attempt %d failed: %s", index + 1, e
+            )
+    if data is None:
+        detail = attempts[-1] if attempts else "unknown error"
+        return (
+            "Doctor traces query failed after "
+            f"{len(attempts)} attempts (narrowed time window and limit). "
+            f"Last error: {detail}"
+        )
 
     if not include_status:
         return _truncate(data)
@@ -2481,14 +2620,17 @@ async def _tool_doctor_traces_recent(args: dict) -> str:
     if not isinstance(traces, list):
         return _truncate(data)
 
-    semaphore = asyncio.Semaphore(8)
+    semaphore = asyncio.Semaphore(4)
 
     async def enrich(trace: dict) -> None:
         async with semaphore:
             summary = await _trace_status_summary(str(trace.get("trace_id") or ""))
             trace.update(summary)
 
-    await asyncio.gather(*(enrich(t) for t in traces if isinstance(t, dict)))
+    # Enrich a bounded prefix; each enriched trace is its own HTTP request, so
+    # this is the most expensive part of a trace query.
+    capped = traces[:10]
+    await asyncio.gather(*(enrich(t) for t in capped if isinstance(t, dict)))
 
     # Put error traces first and surface a top-level count. The response is
     # often large enough to hit the tool truncation limit; the summary and the
@@ -2519,7 +2661,7 @@ register(Skill(
         "service": "Service name filter (optional)",
         "from": "Start time RFC3339 (optional)",
         "to": "End time RFC3339 (optional)",
-        "limit": "Max traces (default 20, max 50)",
+        "limit": "Max traces (default 10, max 50; status enrichment is capped)",
         "include_span_status": "Fetch span status/error details for each trace (default true)",
         "errors_only": "Return only traces that contain error spans (default false)",
     },
@@ -2579,7 +2721,7 @@ register(Skill(
 async def _tool_doctor_event_analysis(args: dict) -> str:
     partition = str(args.get("partition", "")).strip()
     tenant = str(args.get("tenant", "default")).strip() or "default"
-    limit = _to_int(args.get("limit"), default=80, minimum=5, maximum=MAX_EVENT_ANALYSIS_LIMIT)
+    limit = _to_int(args.get("limit"), default=50, minimum=5, maximum=MAX_EVENT_ANALYSIS_LIMIT)
     params = [f"tenant={quote_plus(tenant)}", f"limit={limit}"]
     if partition:
         params.append(f"partition={quote_plus(partition)}")
@@ -2605,7 +2747,7 @@ register(Skill(
     parameters={
         "partition": "Optional partition name filter",
         "tenant": "Doctor tenant (default 'default')",
-        "limit": f"How many events to analyze (default 80, max {MAX_EVENT_ANALYSIS_LIMIT})",
+        "limit": f"How many events to analyze (default 50, max {MAX_EVENT_ANALYSIS_LIMIT})",
     },
     status_prefix="Analyzing Doctor Guardian events",
     handler=_tool_doctor_event_analysis,
@@ -2622,7 +2764,9 @@ async def _nightwatch_get(path: str, params: dict | None = None) -> str:
     if settings.nightwatch_proxy_token:
         headers["X-Nightwatch-Token"] = settings.nightwatch_proxy_token
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0), headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0), headers=headers, **httpx_client_kwargs()
+        ) as client:
             response = await client.get(
                 f"{settings.nightwatch_url.rstrip('/')}{path}", params=params or {}
             )
@@ -2914,7 +3058,7 @@ register(Skill(
 
 register(Skill(
     name="workspace_status", category="workspace",
-    description="Show the MonoFS writable workspace state: mount path, router, session socket, pending changes, staged files, unpushed commits. Start here before editing code.",
+    description="Show the MonoFS writable workspace state: mount path (or headless socket), router, session socket, pending changes, staged files, unpushed commits. Start here before editing code.",
     parameters={},
     status_prefix="Checking MonoFS workspace",
     handler=workspace_tools.workspace_status,
@@ -2922,7 +3066,7 @@ register(Skill(
 
 register(Skill(
     name="workspace_list", category="workspace",
-    description="List files and directories in the MonoFS workspace. Paths are relative to the mount root (e.g. 'monofs/internal/fuse').",
+    description="List files and directories in the MonoFS workspace. Paths are relative to the workspace root (e.g. 'monofs/internal/fuse').",
     parameters={"path": "Directory path relative to the workspace root (default '.')"},
     status_prefix="Listing workspace files",
     handler=workspace_tools.workspace_list,
@@ -2939,6 +3083,9 @@ register(Skill(
     handler=workspace_tools.workspace_read,
 ))
 
+# Writes are sandboxed to the local MonoFS overlay (via workspace._resolve_path)
+# but still mutate the working tree, so they require the normal confirmation
+# gate. Commit/push (persistent/upstream mutations) remain gated as well.
 register(Skill(
     name="workspace_write", category="workspace",
     description="Write a file in the MonoFS workspace (creates or overwrites). Edits are local overlay changes until committed. Provide the complete file content.",
@@ -2948,6 +3095,7 @@ register(Skill(
         "create_dirs": "Create parent directories when missing (default true)",
     },
     status_prefix="Writing workspace file",
+    mutating=True,
     handler=workspace_tools.workspace_write,
 ))
 

@@ -9,6 +9,9 @@ import type {
 
 export interface AgentSettings {
   system_prompt: string;
+  llm_mode: string;
+  llm_mode_effective?: string;
+  llm_profile?: string;
   llm_base_url: string;
   llm_model: string;
   llm_api_key: string;
@@ -154,10 +157,13 @@ export interface ModelPreset {
 }
 
 export interface AgentModelsResponse {
+  mode?: string;
+  default_profile?: string;
   local: {
     provider: string;
     base_url: string;
     current_model: string;
+    profile?: string;
     models: ModelInfo[];
     presets?: ModelPreset[];
     grammar_enabled?: boolean;

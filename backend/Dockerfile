@@ -43,7 +43,10 @@ ENV PYTHONUNBUFFERED=1
 COPY --from=monofs-client-stage /usr/local/bin/bazelisk /usr/local/bin/bazelisk
 RUN ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && ln -s /root/.local/bin/uv /usr/local/bin/uv
+# Pin the uv installer version; never pipe an unversioned remote script.
+ARG UV_VERSION=0.7.13
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
+    && ln -s /root/.local/bin/uv /usr/local/bin/uv
 
 COPY requirements.txt .
 RUN uv pip install --system --no-cache --break-system-packages -r requirements.txt
@@ -56,7 +59,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 COPY app/ ./app/
 
-RUN mkdir -p /data /workspace
+# FUSE mountpoint for the MonoFS workspace. It must exist and be owned by the
+# non-root container user, otherwise monofs-client cannot mount into it.
+RUN mkdir -p /data /workspace /monofs
 
 RUN mkdir -p /etc && \
     touch /etc/fuse.conf && \
@@ -64,10 +69,7 @@ RUN mkdir -p /etc && \
     ln -sf /proc/self/mounts /etc/mtab
 
 RUN useradd -m -s /bin/bash developer && \
-    usermod -aG sudo developer && \
-    echo "developer ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/developer && \
-    chmod 0440 /etc/sudoers.d/developer && \
-    chown -R developer:developer /app /data /workspace
+    chown -R developer:developer /app /data /workspace /monofs
 
 USER developer
 
@@ -75,4 +77,6 @@ EXPOSE 8090
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]
+# app.server applies STRATA_TLS_* to uvicorn's ssl_* options. With TLS off
+# (the default) this is equivalent to the previous uvicorn CLI command.
+CMD ["python", "-m", "app.server", "--app", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]

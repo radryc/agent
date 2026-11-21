@@ -19,11 +19,16 @@ from app.agent.contracts import (
 SIGNALS = ("latency", "traffic", "errors", "saturation")
 
 _PATTERNS = {
+    # Match duration histograms/buckets, not request counters that merely
+    # contain "duration" in their name (http_server_request_duration_count).
     "latency": re.compile(
-        r"latency|duration|response_time|p9[59]|histogram|ttfb|slow", re.I
+        r"latency|response_time|p9[59]|histogram|ttfb|slow|"
+        r"duration(_seconds)?_(bucket|sum)\b|quantile\(0\.9",
+        re.I,
     ),
     "traffic": re.compile(
-        r"traffic|throughput|qps|rps|request_rate|requests_total|http_requests|connections",
+        r"traffic|throughput|qps|rps|request_rate|requests_total|http_requests|"
+        r"http_server_request|request_duration_count|connections",
         re.I,
     ),
     "errors": re.compile(
@@ -54,22 +59,34 @@ _PURPOSE = {
 
 
 def _metric_queries(telemetry: TelemetryReport) -> list[tuple[str, bool]]:
-    """Return (query text, returned_data) for metric evidence records."""
+    """Return the PromQL queries the investigation executed.
+
+    ``metrics_queried`` stores the full PromQL label. Evidence records are
+    truncated for display, so parsing ``record.query`` can cut off a long query
+    before its closing quote and make a covered signal look unqueried.
+    """
     out: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for query in telemetry.metrics_queried:
+        text = str(query or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append((text, True))
     for record in telemetry.evidence:
         if record.kind != "metric":
             continue
-        query = record.query
-        text = query
+        text = record.query
         for pattern in (
             r'"promql"\s*:\s*"((?:[^"\\]|\\.)*)"',
             r"'promql'\s*:\s*'([^']*)'",
         ):
-            match = re.search(pattern, query)
+            match = re.search(pattern, text)
             if match:
                 text = match.group(1).replace('\\"', '"')
                 break
-        out.append((text, not record.empty))
+        if text and text not in seen:
+            seen.add(text)
+            out.append((text, not record.empty))
     return out
 
 
@@ -89,7 +106,13 @@ def analyze_golden_signals(
     metrics = _metric_queries(telemetry)
     coverage: list[GoldenSignalCoverage] = []
 
-    latency_metric = _has_metric(metrics, _PATTERNS["latency"])
+    # Coverage means the investigation actually queried the signal. A query
+    # that legitimately returns zero (for example "no 5xx in this window") is
+    # still coverage; otherwise a healthy system looks like an observability
+    # gap and Otto produces misleading follow-up work.
+    latency_metric = [
+        query for query, _ in metrics if _PATTERNS["latency"].search(query)
+    ]
     trace_evidence = [
         record.query
         for record in telemetry.evidence
@@ -110,7 +133,9 @@ def analyze_golden_signals(
         )
     )
 
-    traffic = _has_metric(metrics, _PATTERNS["traffic"])
+    traffic = [
+        query for query, _ in metrics if _PATTERNS["traffic"].search(query)
+    ]
     coverage.append(
         GoldenSignalCoverage(
             signal="traffic",
@@ -125,8 +150,12 @@ def analyze_golden_signals(
         )
     )
 
-    error_metrics = _has_metric(metrics, _PATTERNS["errors"])
-    error_evidence = error_metrics + telemetry.error_logs[:2] + telemetry.failing_spans[:2]
+    error_metrics = [
+        query for query, _ in metrics if _PATTERNS["errors"].search(query)
+    ]
+    error_evidence = (
+        error_metrics + telemetry.error_logs[:2] + telemetry.failing_spans[:2]
+    )
     coverage.append(
         GoldenSignalCoverage(
             signal="errors",
@@ -141,7 +170,9 @@ def analyze_golden_signals(
         )
     )
 
-    saturation = _has_metric(metrics, _PATTERNS["saturation"])
+    saturation = [
+        query for query, _ in metrics if _PATTERNS["saturation"].search(query)
+    ]
     coverage.append(
         GoldenSignalCoverage(
             signal="saturation",
@@ -185,6 +216,11 @@ def gaps_from_coverage(
     return gaps
 
 
+def _short_evidence(value: str, limit: int = 140) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def format_golden_signals(
     coverage: list[GoldenSignalCoverage],
 ) -> str:
@@ -195,7 +231,9 @@ def format_golden_signals(
     ]
     for item in coverage:
         if item.covered:
-            detail = "; ".join(item.evidence[:2]) or "evidence collected"
+            detail = "; ".join(
+                _short_evidence(query) for query in item.evidence[:2]
+            ) or "evidence collected"
             lines.append(f"- **{item.signal.title()}**: covered — {detail}")
         else:
             lines.append(
