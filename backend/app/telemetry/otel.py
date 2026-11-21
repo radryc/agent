@@ -81,12 +81,11 @@ def init_telemetry(component: str = "lagent-backend") -> None:
             settings.otel_exporter_otlp_endpoint,
             settings.otel_exporter_otlp_insecure,
         )
-        headers = otlp_headers()
         tracer_provider = TracerProvider(resource=resource)
         trace_exporter = OTLPSpanExporter(
             endpoint=settings.otel_exporter_otlp_endpoint,
             insecure=insecure,
-            headers=headers,
+            headers=otlp_headers("OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"),
         )
         tracer_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
         trace.set_tracer_provider(tracer_provider)
@@ -94,7 +93,7 @@ def init_telemetry(component: str = "lagent-backend") -> None:
         metric_exporter = OTLPMetricExporter(
             endpoint=settings.otel_exporter_otlp_endpoint,
             insecure=insecure,
-            headers=headers,
+            headers=otlp_headers("OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_HEADERS"),
         )
         metric_reader = PeriodicExportingMetricReader(
             metric_exporter,
