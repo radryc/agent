@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app import audit
 from app.agent.session import init_db, close_db
 from app.auth.oidc import oidc
 from app.llm.client import close_client
@@ -89,6 +90,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(MetricsMiddleware)
+
+
+@app.middleware("http")
+async def audit_requests(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        audit.emit(
+            "read" if request.method in {"GET", "HEAD", "OPTIONS"} else "write",
+            "allow" if response.status_code < 400 else "deny",
+            request.url.path,
+            scope="agent-http",
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            subject=request.headers.get("x-forwarded-user", ""),
+            request_id=request.headers.get("x-request-id", ""),
+            resource_type="http",
+        )
+    return response
+
 
 app.include_router(chat_router)
 app.include_router(sessions_router)
