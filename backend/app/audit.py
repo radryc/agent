@@ -46,6 +46,7 @@ class AuditEmitter:
         self._lock = threading.Lock()
         self._seq = 0
         self._prev = GENESIS
+        self._broken = False
         self._load_state()
 
     @classmethod
@@ -119,6 +120,8 @@ class AuditEmitter:
         if not self._endpoint:
             return
         with self._lock:
+            if self._broken:
+                return
             event: dict[str, Any] = {
                 "timestamp": datetime.datetime.now(datetime.timezone.utc)
                 .isoformat(timespec="microseconds")
@@ -157,8 +160,9 @@ class AuditEmitter:
                 except Exception:
                     time.sleep(0.1 * (attempt + 1))
             if not inserted:
-                # Audit must not break the Agent request path; the gap is
-                # visible in the emitter metrics and anchor count.
+                # The insert may have committed. Stop this writer's chain
+                # instead of reusing the sequence for a different event.
+                self._broken = True
                 return
             self._seq += 1
             self._prev = digest
