@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zip \
     && locale-gen en_US.UTF-8 \
     && update-locale LANG=en_US.UTF-8 \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV LANG=en_US.UTF-8

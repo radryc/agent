@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from urllib.parse import unquote
 
 from app.config import settings
 
@@ -17,6 +19,35 @@ def resolve_otlp_insecure(endpoint: str, override: bool | None) -> bool:
     if override is not None:
         return bool(override)
     return not str(endpoint or "").strip().lower().startswith("https://")
+
+
+def otlp_headers(*env_vars: str) -> dict[str, str]:
+    """Parse OTLP exporter headers from standard OTel env vars.
+
+    Env var values are comma-separated URL-encoded key=value pairs, for example
+    ``authorization=Bearer%20<token>``.
+
+    When multiple env vars are provided, later ones override earlier ones. This
+    allows signal-specific vars like OTEL_EXPORTER_OTLP_TRACES_HEADERS to
+    override OTEL_EXPORTER_OTLP_HEADERS.
+    """
+    if not env_vars:
+        env_vars = ("OTEL_EXPORTER_OTLP_HEADERS",)
+
+    headers: dict[str, str] = {}
+    for env_var in env_vars:
+        raw = os.getenv(env_var, "").strip()
+        if not raw:
+            continue
+        for item in raw.split(","):
+            key, sep, value = item.partition("=")
+            if not sep:
+                continue
+            key = unquote(key.strip())
+            value = unquote(value.strip())
+            if key:
+                headers[key] = value
+    return headers
 
 
 def init_telemetry(component: str = "lagent-backend") -> None:
@@ -54,6 +85,7 @@ def init_telemetry(component: str = "lagent-backend") -> None:
         trace_exporter = OTLPSpanExporter(
             endpoint=settings.otel_exporter_otlp_endpoint,
             insecure=insecure,
+            headers=otlp_headers("OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"),
         )
         tracer_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
         trace.set_tracer_provider(tracer_provider)
@@ -61,6 +93,7 @@ def init_telemetry(component: str = "lagent-backend") -> None:
         metric_exporter = OTLPMetricExporter(
             endpoint=settings.otel_exporter_otlp_endpoint,
             insecure=insecure,
+            headers=otlp_headers("OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_HEADERS"),
         )
         metric_reader = PeriodicExportingMetricReader(
             metric_exporter,
