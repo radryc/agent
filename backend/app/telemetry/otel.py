@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from urllib.parse import unquote
 
 from app.config import settings
 
@@ -17,6 +19,26 @@ def resolve_otlp_insecure(endpoint: str, override: bool | None) -> bool:
     if override is not None:
         return bool(override)
     return not str(endpoint or "").strip().lower().startswith("https://")
+
+
+def otlp_headers() -> dict[str, str]:
+    """Parse the standard OTEL_EXPORTER_OTLP_HEADERS value.
+
+    The OTel spec uses comma-separated URL-encoded key=value pairs, for example
+    ``authorization=Bearer%20<token>``. The Go services rely on the SDK env
+    handling; the Python exporters need the headers passed explicitly.
+    """
+    raw = os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "").strip()
+    headers: dict[str, str] = {}
+    for item in raw.split(","):
+        key, sep, value = item.partition("=")
+        if not sep:
+            continue
+        key = unquote(key.strip())
+        value = unquote(value.strip())
+        if key and value:
+            headers[key] = value
+    return headers
 
 
 def init_telemetry(component: str = "lagent-backend") -> None:
@@ -50,10 +72,12 @@ def init_telemetry(component: str = "lagent-backend") -> None:
             settings.otel_exporter_otlp_endpoint,
             settings.otel_exporter_otlp_insecure,
         )
+        headers = otlp_headers()
         tracer_provider = TracerProvider(resource=resource)
         trace_exporter = OTLPSpanExporter(
             endpoint=settings.otel_exporter_otlp_endpoint,
             insecure=insecure,
+            headers=headers,
         )
         tracer_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
         trace.set_tracer_provider(tracer_provider)
@@ -61,6 +85,7 @@ def init_telemetry(component: str = "lagent-backend") -> None:
         metric_exporter = OTLPMetricExporter(
             endpoint=settings.otel_exporter_otlp_endpoint,
             insecure=insecure,
+            headers=headers,
         )
         metric_reader = PeriodicExportingMetricReader(
             metric_exporter,
