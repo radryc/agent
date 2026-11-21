@@ -171,7 +171,11 @@ class HeadlessWorkspaceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("main.go", listing)
         self.assertIn("12 bytes", listing)
 
-        status = await workspace.workspace_status({})
+        async def fake_run_session(args, timeout=10.0):
+            return "session: ok"
+
+        with patch.object(workspace, "_run_session", new=fake_run_session):
+            status = await workspace.workspace_status({})
         self.assertIn("Mode: headless", status)
 
 
