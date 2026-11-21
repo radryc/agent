@@ -21,23 +21,32 @@ def resolve_otlp_insecure(endpoint: str, override: bool | None) -> bool:
     return not str(endpoint or "").strip().lower().startswith("https://")
 
 
-def otlp_headers() -> dict[str, str]:
-    """Parse the standard OTEL_EXPORTER_OTLP_HEADERS value.
+def otlp_headers(*env_vars: str) -> dict[str, str]:
+    """Parse OTLP exporter headers from standard OTel env vars.
 
-    The OTel spec uses comma-separated URL-encoded key=value pairs, for example
-    ``authorization=Bearer%20<token>``. The Go services rely on the SDK env
-    handling; the Python exporters need the headers passed explicitly.
+    Env var values are comma-separated URL-encoded key=value pairs, for example
+    ``authorization=Bearer%20<token>``.
+
+    When multiple env vars are provided, later ones override earlier ones. This
+    allows signal-specific vars like OTEL_EXPORTER_OTLP_TRACES_HEADERS to
+    override OTEL_EXPORTER_OTLP_HEADERS.
     """
-    raw = os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "").strip()
+    if not env_vars:
+        env_vars = ("OTEL_EXPORTER_OTLP_HEADERS",)
+
     headers: dict[str, str] = {}
-    for item in raw.split(","):
-        key, sep, value = item.partition("=")
-        if not sep:
+    for env_var in env_vars:
+        raw = os.getenv(env_var, "").strip()
+        if not raw:
             continue
-        key = unquote(key.strip())
-        value = unquote(value.strip())
-        if key and value:
-            headers[key] = value
+        for item in raw.split(","):
+            key, sep, value = item.partition("=")
+            if not sep:
+                continue
+            key = unquote(key.strip())
+            value = unquote(value.strip())
+            if key:
+                headers[key] = value
     return headers
 
 
