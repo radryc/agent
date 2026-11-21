@@ -73,6 +73,8 @@ class AuditEmitter:
             state = json.loads(raw)
         except (OSError, ValueError):
             return
+        if str(state.get("writer_id") or "") != self._writer_id:
+            return
         try:
             self._seq = int(state.get("seq", 0))
         except (TypeError, ValueError):
@@ -85,7 +87,13 @@ class AuditEmitter:
         try:
             Path(self._state_path).parent.mkdir(parents=True, exist_ok=True)
             Path(self._state_path).write_text(
-                json.dumps({"seq": self._seq, "prev_hash": self._prev}),
+                json.dumps(
+                    {
+                        "writer_id": self._writer_id,
+                        "seq": self._seq,
+                        "prev_hash": self._prev,
+                    }
+                ),
                 encoding="utf-8",
             )
         except OSError:
@@ -149,7 +157,10 @@ class AuditEmitter:
 
     def _insert(self, event: dict[str, Any]) -> None:
         body = (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
-        url = f"{self._endpoint}/?query=INSERT%20INTO%20{self._database}.events%20FORMAT%20JSONEachRow"
+        url = (
+            f"{self._endpoint}/?query=INSERT%20INTO%20{self._database}.events%20FORMAT%20JSONEachRow"
+            "&date_time_input_format=best_effort"
+        )
         request = urllib.request.Request(url, data=body, method="POST")
         request.add_header("Content-Type", "application/x-ndjson")
         if self._user or self._password:
