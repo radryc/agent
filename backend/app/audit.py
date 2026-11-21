@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 import urllib.request
 import uuid
 from pathlib import Path
@@ -145,9 +146,17 @@ class AuditEmitter:
             digest = hashlib.sha256((self._prev + canonical).encode("utf-8")).hexdigest()
             event["hash"] = digest
             event["raw_json"] = canonical
-            try:
-                self._insert(event)
-            except Exception:
+            # Retry the same event/seq so an ambiguous ClickHouse success
+            # cannot make the next event reuse the sequence with a new hash.
+            inserted = False
+            for attempt in range(3):
+                try:
+                    self._insert(event)
+                    inserted = True
+                    break
+                except Exception:
+                    time.sleep(0.1 * (attempt + 1))
+            if not inserted:
                 # Audit must not break the Agent request path; the gap is
                 # visible in the emitter metrics and anchor count.
                 return
