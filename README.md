@@ -106,7 +106,7 @@ Services and host ports:
 | Service | Host port | Notes |
 | --- | --- | --- |
 | `frontend` | 3000 | nginx serves the SPA and proxies `/api/` and `/ws/` to `lagent-backend:8090`. |
-| `backend` | 8090 | FastAPI, health at `/api/health`. A writable MonoFS mount requires `/dev/fuse`, `SYS_ADMIN`, and unconfined AppArmor; `MONOFS_HEADLESS=true` avoids all three. |
+| `backend` | 8090 | FastAPI, health at `/api/health`/`/api/ready`, metrics at `/metrics`. A writable MonoFS mount requires `/dev/fuse`, `SYS_ADMIN`, and unconfined AppArmor; `MONOFS_HEADLESS=true` avoids all three. |
 | `llm` | 18080 | llama.cpp OpenAI-compatible server; container port 8080. Model weights live in the `llm-models` volume. |
 
 Useful Makefile targets: `up`, `down`, `logs`, `build`, `dev` (`up --build`), `status`, `restart`, `clean`, `llm-logs`, `backend-logs`, `frontend-logs`.
@@ -185,7 +185,7 @@ npm run build      # tsc -b && vite build
 
 ### Tests
 
-`tests/` contains 18 unittest-style modules (252 test functions) covering routing, personas, the SRE flow, tool loop and hybrid behavior, Guardian detail rendering, workspace confinement, OIDC, proposals, Nightwatch, graph validation, and Compose configuration:
+`tests/` contains 19 unittest-style modules (257 test functions) covering routing, personas, the SRE flow, tool loop and hybrid behavior, Guardian detail rendering, workspace confinement, OIDC, proposals, Nightwatch, graph validation, TLS/auth, and Compose configuration:
 
 ```bash
 python -m unittest discover -s tests
@@ -194,6 +194,12 @@ python -m unittest discover -s tests
 The Compose configuration test shells out to `docker compose config` and therefore needs Docker.
 
 ## Security and approval gates
+
+### Request authentication
+
+Inbound API auth is on by default (`AGENT_AUTH_REQUIRED=true`). Clients present a static `AGENT_API_TOKEN` and/or an OIDC user token; admin-only settings and mutation routes additionally require membership in `AGENT_ADMIN_GROUPS`. WebSocket auth accepts `?token=`, a bearer header, or the signed `lagent_sso` cookie.
+
+Every `/api/*` request emits an audit record. When `AGENT_AUDIT_CH_URL` is set, records are appended to a hash-chained ClickHouse `audit.events` table using `AGENT_AUDIT_WRITER_ID`, `AGENT_AUDIT_STATE_FILE`, and the `AGENT_AUDIT_*` connection settings; without it the emitter is inert.
 
 ### Read-only by default
 
